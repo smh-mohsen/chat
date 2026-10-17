@@ -233,6 +233,20 @@ main{position:relative; z-index:10; flex:1; min-width:0; display:flex; flex-dire
 .typing i:nth-child(2){animation-delay:.15s}
 .typing i:nth-child(3){animation-delay:.3s}
 @keyframes bounce{0%,80%,100%{transform:translateY(0); opacity:.45} 40%{transform:translateY(-5px); opacity:1}}
+/* ---------- live streaming ---------- */
+.bubble.streaming{border-color:var(--accent)}
+.bubble.streaming::after{
+  content:"▍"; margin-inline-start:2px; color:var(--accent); font-weight:700;
+  animation:caret 1.05s steps(1,end) infinite;
+}
+@keyframes caret{0%,55%{opacity:1} 56%,100%{opacity:.12}}
+.mstream{display:none; align-items:center; gap:6px; font-size:11.5px; color:var(--accent); padding-inline:4px}
+.mstream.on{display:flex}
+.mstream i{
+  width:6px; height:6px; border-radius:50%; background:currentColor; flex:none;
+  animation:pulse 1.1s infinite ease-in-out;
+}
+@keyframes pulse{0%,100%{transform:scale(.55); opacity:.45} 50%{transform:scale(1); opacity:1}}
 /* ---------- empty state ---------- */
 .empty{max-width:660px; margin:6vh auto; text-align:center; animation:rise .4s ease both}
 .empty .hero{
@@ -362,6 +376,7 @@ kbd{
     <div class="hint">
       <kbd>Enter</kbd> ارسال · <kbd>Shift</kbd>+<kbd>Enter</kbd> خط جدید · <kbd>Ctrl</kbd>+<kbd>K</kbd> گفتوگوی جدید
       · گفتوگوها در همین مرورگر ذخیره میشوند
+      · پاسخ‌ها به‌صورت زنده و تکه‌تکه نوشته می‌شوند
     </div>
   </form>
 </main>
@@ -392,6 +407,8 @@ const SUGGESTIONS = [
 const state = { chats: [], activeId: null };
 const busy = new Set();               // chat ids with an in-flight request
 const controllers = new Map();        // chat id -> AbortController
+const live = new Map();               // chat id -> assistant text received so far (streaming)
+const liveStatus = new Map();         // chat id -> current status line ("🔎 جست‌وجوی...")
 
 /* ---------- helpers ---------- */
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -609,6 +626,10 @@ function buildRow(role, content, opts) {
   const col = document.createElement("div");
   col.className = "msg-col";
 
+  const status = document.createElement("div");
+  status.className = "mstream";
+  status.innerHTML = "<i></i><span></span>";
+
   const bubble = document.createElement("div");
   bubble.className = "bubble";
   bubble.dir = "auto";
@@ -626,11 +647,52 @@ function buildRow(role, content, opts) {
       '<span class="msg-tools"><button class="icon-btn" data-action="copy-msg" title="کپی پیام">⧉</button></span>';
   }
 
+  if (o.streaming) bubble.classList.add("streaming");
+  col.appendChild(status);
   col.appendChild(bubble);
   col.appendChild(meta);
   row.appendChild(avatar);
   row.appendChild(col);
   return row;
+}
+
+/* ---------- live streaming helpers ---------- */
+function streamRowFor(id) {
+  const key = window.CSS && CSS.escape ? CSS.escape(id) : id;
+  return logWrap.querySelector('.row[data-stream="' + key + '"]');
+}
+
+function setStreamStatus(row, text) {
+  const el = row && row.querySelector(".mstream");
+  if (!el) return;
+  el.querySelector("span").textContent = text || "";
+  el.classList.toggle("on", !!text);
+}
+
+const PENDING_DOTS = '<span class="typing"><i></i><i></i><i></i></span>';
+let paintTimer = 0;
+let paintFrame = 0;
+let paintNext = null;
+
+function flushPaint() {
+  if (paintTimer) { clearTimeout(paintTimer); paintTimer = 0; }
+  if (paintFrame) { cancelAnimationFrame(paintFrame); paintFrame = 0; }
+  const job = paintNext;
+  paintNext = null;
+  if (!job || !job.row.isConnected) return;
+  const bubble = job.row.querySelector(".bubble");
+  if (!bubble) return;
+  bubble.innerHTML = job.text ? renderMarkdown(job.text) : PENDING_DOTS;
+  bubble.classList.toggle("streaming", !!job.text);
+  scrollDown(false);
+}
+
+/* متن ناقص را حداکثر یک‌بار در هر فریم (و دست‌کم هر ۹۰ میلی‌ثانیه) بنشان */
+function paintStream(row, text) {
+  paintNext = { row, text };
+  if (paintTimer || paintFrame) return;
+  paintFrame = requestAnimationFrame(flushPaint);
+  paintTimer = setTimeout(flushPaint, 90);
 }
 
 function renderConversation() {
@@ -653,7 +715,14 @@ function renderConversation() {
     logWrap.appendChild(empty);
   } else {
     for (const m of chat.messages) logWrap.appendChild(buildRow(m.role, m.content, { ts: m.ts, error: m.error }));
-    if (isBusy(chat.id)) logWrap.appendChild(buildRow("assistant", "", { pending: true }));
+    if (isBusy(chat.id)) {
+      // گفت‌وگویی که همین حالا در حال استریم است: متن رسیده تا این لحظه را نشان بده
+      const partial = live.get(chat.id) || "";
+      const row = buildRow("assistant", partial, { pending: !partial, streaming: !!partial });
+      row.dataset.stream = chat.id;
+      setStreamStatus(row, liveStatus.get(chat.id) || "در حال آماده‌سازی پاسخ…");
+      logWrap.appendChild(row);
+    }
   }
 
   updateComposer();
@@ -722,6 +791,8 @@ function deleteChat(id) {
   const ctrl = controllers.get(id);
   if (ctrl) { ctrl.abort(); controllers.delete(id); }
   busy.delete(id);
+  live.delete(id);
+  liveStatus.delete(id);
 
   state.chats = state.chats.filter((c) => c.id !== id);
   if (!state.chats.length) state.chats.push(makeChat());
@@ -761,23 +832,93 @@ const copyBtnHtml = '<span class="msg-tools"><button class="icon-btn" data-actio
 function fillRow(row, content, isError) {
   row.classList.toggle("error", !!isError);
   delete row.dataset.pending;
+  delete row.dataset.stream;
   const bubble = row.querySelector(".bubble");
+  bubble.classList.remove("streaming");
   bubble.innerHTML = renderMarkdown(content);
   row.querySelector(".meta").innerHTML = "<span>" + timeOf(Date.now()) + "</span>" + copyBtnHtml;
+  setStreamStatus(row, "");
 }
 
-function finishPending(chat, pendingRow, content, isError) {
+/* پایان استریم: متن نهایی را در همان ردیف بنشان (اگر گفت‌وگوی دیگری باز است خبر بده) */
+function finishStream(chat, content, isError) {
+  live.delete(chat.id);
+  liveStatus.delete(chat.id);
+  if (!chatById(chat.id)) return;   // گفت‌وگو در همین حال حذف شد
   if (state.activeId !== chat.id) {
     toast("پاسخ در «" + chat.title + "» آماده شد");
     return;
   }
-  if (pendingRow && pendingRow.isConnected) {
-    fillRow(pendingRow, content, isError);
+  const row = streamRowFor(chat.id);
+  if (row && row.isConnected) {
+    fillRow(row, content, isError);
     scrollDown(true);
     return;
   }
-  busy.delete(chat.id);        // conversation was re-rendered meanwhile
-  renderConversation();
+  renderConversation();            // گفت‌وگو در این فاصله دوباره رندر شده بود
+}
+
+/* یک بلوک SSE را به رویداد تبدیل می‌کند */
+function parseEvent(block) {
+  let data = "";
+  for (const line of block.split("\n")) {
+    if (line.startsWith("data:")) data += line.slice(5).trimStart();
+  }
+  if (!data) return null;
+  try { return JSON.parse(data); } catch { return null; }
+}
+
+/* بدنه‌ی /chat/stream را می‌خواند و هر رویداد را تحویل می‌دهد */
+async function openStream(payload, signal, onEvent) {
+  const res = await fetch("/chat/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify(payload),
+    signal,
+  });
+  if (!res.ok) throw new Error("stream " + res.status);
+  if (!res.body || !res.body.getReader) throw new Error("stream در دسترس نیست");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true }).replace(/\r/g, "");
+    let cut;
+    while ((cut = buffer.indexOf("\n\n")) !== -1) {
+      const evt = parseEvent(buffer.slice(0, cut));
+      buffer = buffer.slice(cut + 2);
+      if (evt) onEvent(evt);
+    }
+  }
+  const last = parseEvent(buffer);
+  if (last) onEvent(last);
+}
+
+const streamMissing = (err) => !!err && String(err.message || "").startsWith("stream ");
+
+/* اگر استریم در دسترس نبود (سرور قدیمی یا پروکسی بافرکننده)، پاسخ را یکجا بگیر */
+async function fetchReplyJson(payload, signal) {
+  const res = await fetch("/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  });
+  if (!res.ok) throw new Error("کد پاسخ سرور: " + res.status);
+  const data = await res.json().catch(() => null);
+  const reply = data && typeof data.reply === "string" ? data.reply.trim() : "";
+  if (!reply) throw new Error("پاسخ خالی از سرور دریافت شد");
+  return reply;
+}
+
+function showFailure(chat, partial, err) {
+  const msg = "⚠️ ارتباط با سرور برقرار نشد: " + ((err && err.message) || String(err));
+  const content = partial ? partial + "\n\n" + msg : msg;
+  chat.messages.push({ role: "assistant", content, ts: Date.now(), error: true });
+  finishStream(chat, content, true);
 }
 
 async function send() {
@@ -796,9 +937,14 @@ async function send() {
 
   titleEl.textContent = chat.title;
   appendIfActive(chat.id, "user", text, { ts: Date.now() });
-  const pendingRow = appendIfActive(chat.id, "assistant", "", { pending: true });
 
   busy.add(chat.id);
+  live.set(chat.id, "");
+  liveStatus.set(chat.id, "");
+  const streamRow = appendIfActive(chat.id, "assistant", "", { pending: true });
+  if (streamRow) streamRow.dataset.stream = chat.id;
+  setStreamStatus(streamRow, "در حال آماده‌سازی پاسخ…");
+
   renderList();
   updateComposer();
 
@@ -806,29 +952,75 @@ async function send() {
   controllers.set(chat.id, ctrl);
   const payload = { messages: chat.messages.map((m) => ({ role: m.role, content: m.content })) };
 
+  let received = "";      // متن پاسخ تا این لحظه
+  let serverError = "";   // خطای اعلام‌شده در میانه‌ی استریم
+
+  const stopAfterAbort = () => {
+    const partial = received.trim();
+    if (partial) {
+      chat.messages.push({ role: "assistant", content: partial, ts: Date.now() });
+      finishStream(chat, partial, false);
+    } else {
+      const row = streamRowFor(chat.id);
+      if (row) row.remove();
+    }
+    toast("درخواست متوقف شد");
+  };
+
+  const onEvent = (evt) => {
+    const row = streamRowFor(chat.id);
+    const active = state.activeId === chat.id;
+    if (evt.type === "delta") {
+      received += evt.text || "";
+      live.set(chat.id, received);
+      liveStatus.set(chat.id, "");           // متن آمد؛ وضعیت دیگر لازم نیست
+      if (active && row) { setStreamStatus(row, ""); paintStream(row, received); }
+    } else if (evt.type === "status") {
+      liveStatus.set(chat.id, evt.text || "");
+      live.set(chat.id, received);
+      if (active && row) setStreamStatus(row, evt.text || "");
+    } else if (evt.type === "restart") {
+      received = "";
+      live.set(chat.id, "");
+      liveStatus.set(chat.id, "در حال بررسی نتایج…");
+      if (active && row) {
+        const bubble = row.querySelector(".bubble");
+        bubble.classList.remove("streaming");
+        bubble.innerHTML = PENDING_DOTS;
+        setStreamStatus(row, "در حال بررسی نتایج…");
+      }
+    } else if (evt.type === "error") {
+      serverError = evt.message || "خطای نامشخص";
+    }
+  };
+
   try {
-    const res = await fetch("/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      signal: ctrl.signal,
-    });
-    if (!res.ok) throw new Error("کد پاسخ سرور: " + res.status);
-    const data = await res.json().catch(() => null);
-    const reply = data && typeof data.reply === "string" ? data.reply.trim() : "";
+    await openStream(payload, ctrl.signal, onEvent);
+    const reply = received.trim();
+    if (!reply && serverError) throw new Error(serverError);
     if (!reply) throw new Error("پاسخ خالی از سرور دریافت شد");
     chat.messages.push({ role: "assistant", content: reply, ts: Date.now() });
-    finishPending(chat, pendingRow, reply, false);
+    finishStream(chat, reply, false);
+    if (serverError) toast("هشدار سرور: " + serverError);
   } catch (err) {
     if (err && err.name === "AbortError") {
-      if (pendingRow && pendingRow.isConnected) pendingRow.remove();
-      toast("درخواست متوقف شد");
+      stopAfterAbort();
+    } else if (streamMissing(err) && !received.trim()) {
+      try {                                     // استریم نبود؛ همان مسیر قدیمی
+        const reply = await fetchReplyJson(payload, ctrl.signal);
+        chat.messages.push({ role: "assistant", content: reply, ts: Date.now() });
+        finishStream(chat, reply, false);
+        toast("استریم در دسترس نبود؛ پاسخ یکجا دریافت شد");
+      } catch (err2) {
+        if (err2 && err2.name === "AbortError") stopAfterAbort();
+        else showFailure(chat, "", err2);
+      }
     } else {
-      const msg = "⚠️ ارتباط با سرور برقرار نشد: " + ((err && err.message) || String(err));
-      chat.messages.push({ role: "assistant", content: msg, ts: Date.now(), error: true });
-      finishPending(chat, pendingRow, msg, true);
+      showFailure(chat, received.trim(), err);
     }
   } finally {
+    live.delete(chat.id);
+    liveStatus.delete(chat.id);
     busy.delete(chat.id);
     controllers.delete(chat.id);
     chat.updatedAt = Date.now();
