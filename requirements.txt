@@ -1,0 +1,18 @@
+# نیازمندی‌های پروژه‌ی چت هوش مصنوعی (FastAPI + OpenAI + Tavily)
+# نصب: pip install -r requirements.txt
+# پیش‌نیاز: Python 3.10 یا بالاتر (به‌دلیل type hint هایی مثل `int | None` و `list[dict]`)
+# اجرا: uvicorn main:app --reload
+
+# --- وب سرور و API ---
+fastapi==0.144.0
+uvicorn==0.54.0
+pydantic==2.14.1
+
+# --- مدل زبانی (OpenAI API) ---
+openai==3.35.1
+
+# --- جست‌وجوی وب (ابزار web_search) ---
+tavily-python==0.8.5
+
+# --- خواندن متغیرهای محیطی از فایل .env ---
+python-dotenv==1.2.4
