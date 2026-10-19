@@ -298,16 +298,144 @@ TOOLS = [
 ]
 
 
+# ---------- token usage & cost ----------
+# قیمتها بر اساس هر یک میلیون توکن و به دلار آمریکا هستند.
+# برای افزودن مدل جدید فقط یک سطر به این جدول اضافه کن.
+PRICING = {
+    "gpt-4o-mini": {"input": 0.15, "cached_input": 0.075, "output": 0.60, "context": 128_000},
+    "gpt-4o": {"input": 2.50, "cached_input": 1.25, "output": 10.00, "context": 128_000},
+    "gpt-4.1": {"input": 2.00, "cached_input": 0.50, "output": 8.00, "context": 1_047_576},
+    "gpt-4.1-mini": {"input": 0.40, "cached_input": 0.10, "output": 1.60, "context": 1_047_576},
+    "gpt-4.1-nano": {"input": 0.10, "cached_input": 0.025, "output": 0.40, "context": 1_047_576},
+    "o4-mini": {"input": 1.10, "cached_input": 0.275, "output": 4.40, "context": 200_000},
+    "gpt-4-turbo": {"input": 10.00, "cached_input": 10.00, "output": 30.00, "context": 128_000},
+    "gpt-3.5-turbo": {"input": 0.50, "cached_input": 0.50, "output": 1.50, "context": 16_385},
+}
+DEFAULT_PRICING = PRICING["gpt-4o-mini"]
+PER_TOKENS = 1_000_000
+
+# اگر سرور سازگار با OpenAI پارامتر stream_options را نپذیرد، خودکار یکبار
+# دیگر بدون آن تلاش میکنیم. برای خاموشکردن کامل: STREAM_USAGE=0 در .env
+STREAM_USAGE = os.environ.get("STREAM_USAGE", "1") != "0"
+
+
+def _price_for(model: str) -> dict:
+    """قیمت مدل را پیدا میکند (اول تطابق دقیق، بعد تطابق پیشوندی)."""
+    name = (model or "").strip().lower()
+    if name in PRICING:
+        return PRICING[name]
+    for key, value in PRICING.items():
+        if name.startswith(key):
+            return value
+    return DEFAULT_PRICING
+
+
+def _approx_tokens(value) -> int:
+    """تخمین تقریبی توکن (≈۴ کاراکتر برای هر توکن) وقتی سرور usage نمیفرستد."""
+    if value is None:
+        return 0
+    text = (
+        value
+        if isinstance(value, str)
+        else json.dumps(value, ensure_ascii=False, default=str)
+    )
+    text = text.strip()
+    return max(1, len(text) // 4) if text else 0
+
+
+class UsageTracker:
+    """مصرف توکن و هزینهی یک پاسخ را در چند مرحله (tool-calling) جمع میکند."""
+
+    def __init__(self, model: str = MODEL):
+        self.model = model
+        self.pricing = _price_for(model)
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.cached_tokens = 0
+        self.total_tokens = 0
+        self.context_peak = 0
+        self.steps = 0
+        self.estimated_steps = 0
+
+    def add(self, usage) -> None:
+        """آمار واقعی یک فراخوانی مدل را اضافه میکند."""
+        if usage is None:
+            return
+        prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion = int(getattr(usage, "completion_tokens", 0) or 0)
+        total = int(getattr(usage, "total_tokens", 0) or (prompt + completion))
+        details = getattr(usage, "prompt_tokens_details", None)
+        cached = int(getattr(details, "cached_tokens", 0) or 0) if details else 0
+        self.input_tokens += prompt
+        self.output_tokens += completion
+        self.cached_tokens += min(cached, prompt)  # cached داخل prompt_tokens است
+        self.total_tokens += total
+        self.context_peak = max(self.context_peak, total)
+        self.steps += 1
+
+    def add_estimate(self, messages: list[dict], output_text: str) -> None:
+        """وقتی سرور usage برنمیگرداند، مصرف را تقریبی حدس میزند."""
+        parts = [m.get("content") for m in messages]
+        parts += [m.get("tool_calls") for m in messages if m.get("tool_calls")]
+        prompt = sum(_approx_tokens(p) for p in parts if p)
+        prompt += _approx_tokens(TOOLS)  # تعریف ابزارها هم توکن مصرف میکند
+        completion = _approx_tokens(output_text)
+        total = prompt + completion
+        self.input_tokens += prompt
+        self.output_tokens += completion
+        self.total_tokens += total
+        self.context_peak = max(self.context_peak, total)
+        self.steps += 1
+        self.estimated_steps += 1
+
+    def to_dict(self) -> dict:
+        """خروجی JSON-friendly برای فرستادن به رابط کاربری."""
+        price = self.pricing
+        fresh_input = max(0, self.input_tokens - self.cached_tokens)
+        cost_input = fresh_input / PER_TOKENS * price["input"]
+        cost_cached = self.cached_tokens / PER_TOKENS * price["cached_input"]
+        cost_output = self.output_tokens / PER_TOKENS * price["output"]
+        return {
+            "model": self.model,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cached_tokens": self.cached_tokens,
+            "total_tokens": self.total_tokens,
+            "context_used": self.context_peak,
+            "context_limit": price["context"],
+            "steps": self.steps,
+            "estimated": self.estimated_steps > 0,
+            "estimated_steps": self.estimated_steps,
+            "cost_input_usd": round(cost_input, 10),
+            "cost_cached_usd": round(cost_cached, 10),
+            "cost_output_usd": round(cost_output, 10),
+            "cost_usd": round(cost_input + cost_cached + cost_output, 10),
+            "pricing": {
+                "input": price["input"],
+                "cached_input": price["cached_input"],
+                "output": price["output"],
+                "unit": "USD per 1M tokens",
+            },
+        }
+
+
 # ---------- agent loop ----------
-def run_agent(messages: list[dict], max_steps: int = 5) -> str:
+def run_agent(messages: list[dict], max_steps: int = 5) -> dict:
+    """پاسخ کامل را میسازد و مصرف توکن/هزینهی آن را هم برمیگرداند."""
+    tracker = UsageTracker()
     for _ in range(max_steps):
+        steps_before = tracker.steps
         resp = client.chat.completions.create(
             model=MODEL, messages=messages, tools=TOOLS
         )
+        tracker.add(getattr(resp, "usage", None))
         msg = resp.choices[0].message
 
         if not msg.tool_calls:
-            return msg.content or ""
+            content = msg.content or ""
+            if tracker.steps == steps_before:  # سرور usage نداد
+                tracker.add_estimate(messages, content)
+            return {"reply": content, "usage": tracker.to_dict()}
 
         messages.append(msg.model_dump(exclude_none=True))
 
@@ -321,13 +449,50 @@ def run_agent(messages: list[dict], max_steps: int = 5) -> str:
                 {"role": "tool", "tool_call_id": call.id, "content": result}
             )
 
-    return "تعداد مراحل مجاز تمام شد."
+    return {"reply": "تعداد مراحل مجاز تمام شد.", "usage": tracker.to_dict()}
 
 
 # ---------- streaming agent ----------
 def sse(payload: dict) -> str:
     """یک رویداد SSE با بدنه‌ی JSON می‌سازد."""
     return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+
+
+def _stream_chunks(messages: list[dict]):
+    """تکههای استریم مدل را تحویل میدهد (و در پایان chunk مربوط به usage را).
+
+    اگر سرور پارامتر stream_options را نپذیرد، یکبار دیگر بدون آن تلاش
+    میکند؛ بهشرط آنکه هنوز چیزی به کاربر فرستاده نشده باشد.
+    """
+    attempts: list[dict] = []
+    if STREAM_USAGE:
+        attempts.append({"stream_options": {"include_usage": True}})
+    attempts.append({})
+
+    last_error: Exception | None = None
+    for extra in attempts:
+        try:
+            stream = client.chat.completions.create(
+                model=MODEL, messages=messages, tools=TOOLS, stream=True, **extra
+            )
+        except Exception as e:  # خود درخواست رد شد
+            last_error = e
+            continue
+        sent_any = False
+        try:
+            for chunk in stream:
+                sent_any = True
+                yield chunk
+            return
+        except Exception as e:
+            if sent_any:  # وسط استریم خراب شد؛ دیگر دوباره تلاش نکن
+                raise
+            last_error = e
+        finally:
+            stream.close()  # اگر کلاینت قطع شد، اتصال OpenAI هم بسته شود
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("استریم باز نشد.")
 
 
 def stream_agent(messages: list[dict], max_steps: int = 5):
@@ -337,41 +502,44 @@ def stream_agent(messages: list[dict], max_steps: int = 5):
       {"type": "status", "text": "..."}     وضعیت فعلی (جست‌وجو، نوشتن پاسخ)
       {"type": "delta",  "text": "..."}     تکه‌ی تازه‌ی پاسخ
       {"type": "restart"}                   متن قبلی پاسخ نهایی نبود؛ از نو بنویس
+      {"type": "usage",  "usage": {...}}     مصرف توکن و هزینه این پاسخ
       {"type": "error",  "message": "..."}  خطا
       {"type": "done"}                      پایان موفق
     """
+    tracker = UsageTracker()
     try:
         for _ in range(max_steps):
-            stream = client.chat.completions.create(
-                model=MODEL, messages=messages, tools=TOOLS, stream=True
-            )
+            steps_before = tracker.steps
             calls: dict[int, dict] = {}
             text = ""
-            try:
-                for chunk in stream:
-                    if not chunk.choices:
-                        continue
-                    delta = chunk.choices[0].delta
-                    if delta is None:
-                        continue
-                    if delta.content:
-                        text += delta.content
-                        yield sse({"type": "delta", "text": delta.content})
-                    for call in delta.tool_calls or []:
-                        slot = calls.setdefault(
-                            call.index or 0, {"id": "", "name": "", "arguments": ""}
-                        )
-                        if call.id:
-                            slot["id"] = call.id
-                        if call.function is not None:
-                            if call.function.name:
-                                slot["name"] += call.function.name
-                            if call.function.arguments:
-                                slot["arguments"] += call.function.arguments
-            finally:
-                stream.close()  # اگر کلاینت قطع شد، اتصال OpenAI هم بسته شود
+            for chunk in _stream_chunks(messages):
+                if getattr(chunk, "usage", None):
+                    tracker.add(chunk.usage)
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta is None:
+                    continue
+                if delta.content:
+                    text += delta.content
+                    yield sse({"type": "delta", "text": delta.content})
+                for call in delta.tool_calls or []:
+                    slot = calls.setdefault(
+                        call.index or 0, {"id": "", "name": "", "arguments": ""}
+                    )
+                    if call.id:
+                        slot["id"] = call.id
+                    if call.function is not None:
+                        if call.function.name:
+                            slot["name"] += call.function.name
+                        if call.function.arguments:
+                            slot["arguments"] += call.function.arguments
+
+            if tracker.steps == steps_before:
+                tracker.add_estimate(messages, text)
 
             if not calls:
+                yield sse({"type": "usage", "usage": tracker.to_dict()})
                 yield sse({"type": "done"})
                 return
 
@@ -424,6 +592,7 @@ def stream_agent(messages: list[dict], max_steps: int = 5):
                 )
             yield sse({"type": "status", "text": "✍️ در حال نوشتن پاسخ…"})
 
+        yield sse({"type": "usage", "usage": tracker.to_dict()})
         yield sse({"type": "error", "message": "تعداد مراحل مجاز تمام شد."})
         yield sse({"type": "done"})
     except Exception as e:  # به‌جای استریم خراب، خطا را به کاربر نشان بده
@@ -438,8 +607,9 @@ class ChatReq(BaseModel):
 
 @app.post("/chat")
 def chat(req: ChatReq):
+    """پاسخ یکجا: {"reply": "...", "usage": {توکن/هزینه}}"""
     msgs = [{"role": "system", "content": SYSTEM}] + req.messages
-    return {"reply": run_agent(msgs)}
+    return run_agent(msgs)
 
 
 @app.post("/chat/stream")

@@ -224,6 +224,42 @@ main{position:relative; z-index:10; flex:1; min-width:0; display:flex; flex-dire
 .meta{font-size:11px; color:var(--muted); padding-inline:4px; display:flex; gap:8px; align-items:center}
 .msg-tools{display:flex; gap:2px; opacity:0; transition:opacity .15s}
 .row:hover .msg-tools{opacity:1}
+
+/* ---------- token usage popup ---------- */
+.usage-btn{
+  width:26px; height:26px; flex:none; font-size:12.5px; border-radius:9px;
+  color:var(--muted); background:var(--panel-2); border:1px solid var(--border);
+  transition:background .15s, color .15s, border-color .15s;
+}
+.usage-btn:hover{background:var(--accent-soft); color:var(--accent); border-color:var(--accent)}
+.usage-btn.on{background:var(--accent); color:#fff; border-color:transparent}
+.usage-pop{
+  width:340px; max-width:100%; margin-top:5px; padding:12px 13px 11px;
+  border-radius:16px; border:1px solid var(--border); background:var(--panel-2);
+  box-shadow:var(--shadow); animation:rise .18s ease both; text-align:start;
+}
+.usage-head{display:flex; align-items:center; gap:8px; margin-bottom:7px}
+.usage-head b{flex:1; font-size:12.5px}
+.usage-tag{
+  font-size:10px; color:var(--muted); background:var(--panel-3);
+  border:1px solid var(--border); padding:1px 7px; border-radius:999px;
+}
+.usage-x{width:22px; height:22px; flex:none; border-radius:7px; color:var(--muted); font-size:11px}
+.usage-x:hover{background:var(--panel-3); color:var(--text)}
+.u-row{display:flex; align-items:center; gap:8px; font-size:12px; padding:3px 0}
+.u-row .u-k{flex:1; color:var(--muted)}
+.u-row .u-v{font-variant-numeric:tabular-nums; direction:ltr}
+.u-row .u-v em{font-style:normal; font-size:11px; color:var(--muted)}
+.u-sep{height:1px; background:var(--border); margin:8px 0}
+.u-ctx-top{display:flex; gap:8px; font-size:11.5px; color:var(--muted)}
+.u-ctx-top span:last-child{margin-inline-start:auto; direction:ltr}
+.u-bar{height:6px; border-radius:99px; background:var(--panel-3); overflow:hidden; margin-top:5px}
+.u-bar i{
+  display:block; height:100%; border-radius:99px; transition:width .3s;
+  background:linear-gradient(90deg,var(--user-1),var(--user-2));
+}
+.u-foot{display:flex; flex-wrap:wrap; gap:3px 12px; margin-top:9px; font-size:11.5px; color:var(--muted)}
+.u-foot b{color:var(--text); font-size:13px; font-weight:700; direction:ltr}
 .error .bubble{border-color:var(--danger); color:var(--danger); background:rgba(225,29,72,.06)}
 .typing{display:inline-flex; gap:4px; align-items:center; padding:2px 0}
 .typing i{
@@ -416,6 +452,99 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const timeOf = (ts) => new Date(ts || Date.now()).toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit" });
 
+/* ---------- token usage helpers ---------- */
+const fmtInt = (n) => (Number(n) || 0).toLocaleString("en-US");
+const fmtRate = (v) => "$" + (Number(v) || 0);
+const fmtCost = (usd) => {
+  const v = Number(usd) || 0;
+  if (!v) return "$0";
+  if (v < 0.0001) return "$" + v.toFixed(6);
+  if (v < 1) return "$" + v.toFixed(4);
+  return "$" + v.toFixed(3);
+};
+
+const pctOf = (used, limit) => (limit ? Math.min(100, Math.round((used / limit) * 1000) / 10) : 0);
+
+function metaHtml(ts, hasUsage, usage) {
+  let btn = "";
+  if (hasUsage) {
+    const title = "مصرف توکن و هزینه" + (usage
+      ? " — " + fmtInt(usage.total_tokens) + " توکن · " + fmtCost(usage.cost_usd)
+      : "");
+    btn = '<button type="button" class="icon-btn usage-btn" data-action="usage" ' +
+      'aria-label="مصرف توکن و هزینه" title="' + esc(title) + '">📊</button>';
+  }
+  return "<span>" + timeOf(ts) + "</span>" + btn +
+    '<span class="msg-tools"><button class="icon-btn" data-action="copy-msg" title="کپی پیام">⧉</button></span>';
+}
+
+function usageHtml(u) {
+  const d = u || {};
+  const input = Number(d.input_tokens) || 0;
+  const output = Number(d.output_tokens) || 0;
+  const cached = Number(d.cached_tokens) || 0;
+  const total = Number(d.total_tokens) || (input + output);
+  const limit = Number(d.context_limit) || 0;
+  const used = Number(d.context_used) || total;
+  const pct = pctOf(used, limit);
+  const price = d.pricing || {};
+
+  const row = (label, tokens, usd) =>
+    '<div class="u-row"><span class="u-k">' + label + "</span>" +
+    '<span class="u-v">' + fmtInt(tokens) +
+    (usd === undefined || usd === null ? "" : " <em>" + fmtCost(usd) + "</em>") +
+    "</span></div>";
+
+  return (
+    '<div class="usage-head">' +
+      "<b>مصرف این پاسخ</b>" +
+      (d.estimated
+        ? '<span class="usage-tag" title="سرور آمار دقیق نفرستاد؛ این عددها تقریبیاند">تقریبی</span>'
+        : "") +
+      '<button type="button" class="usage-x" data-action="usage-close" title="بستن">✕</button>' +
+    "</div>" +
+    row("توکن ورودی (input)", input, d.cost_input_usd) +
+    row("توکن خروجی (output)", output, d.cost_output_usd) +
+    row("توکن کش شده (cached)", cached, d.cost_cached_usd) +
+    row("مجموع توکن ها", total) +
+    '<div class="u-sep"></div>' +
+    '<div class="u-ctx-top"><span>زمینه (Context)</span><span>' +
+      fmtInt(used) + (limit ? " / " + fmtInt(limit) + " · " + pct + "٪" : "") +
+    "</span></div>" +
+    '<div class="u-bar"><i style="width:' + (limit ? pct : 0) + '%"></i></div>' +
+    '<div class="u-foot">' +
+      "<span>هزینه: <b>" + fmtCost(d.cost_usd) + "</b></span>" +
+      "<span>مدل: " + esc(d.model || "—") + "</span>" +
+      "<span>مرحله: " + fmtInt(d.steps || 1) + "</span>" +
+      (price.input === undefined ? "" :
+        '<span title="نرخ هر ۱ میلیون توکن — ورودی / کششده / خروجی">' +
+        "نرخ: " + fmtRate(price.input) + " / " + fmtRate(price.cached_input) + " / " +
+        fmtRate(price.output) + "</span>") +
+    "</div>"
+  );
+}
+
+function buildUsagePop(u) {
+  const pop = document.createElement("div");
+  pop.className = "usage-pop";
+  pop.hidden = true;
+  pop.innerHTML = usageHtml(u);
+  return pop;
+}
+
+function setUsageOpen(btn, open) {
+  if (btn) btn.classList.toggle("on", !!open);
+}
+
+/* فقط یک پاپآپ در کل صفحه باز میماند */
+function closeUsagePops(except) {
+  logWrap.querySelectorAll(".usage-pop").forEach((pop) => {
+    if (pop === except) return;
+    pop.hidden = true;
+    setUsageOpen(pop.parentElement && pop.parentElement.querySelector(".usage-btn"), false);
+  });
+}
+
 function toast(msg) {
   const el = $("#toast");
   el.textContent = msg;
@@ -522,7 +651,13 @@ function normalizeChat(c) {
     updatedAt: Number(c && c.updatedAt) || Date.now(),
     messages: msgs
       .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
-      .map((m) => ({ role: m.role, content: m.content, ts: Number(m.ts) || Date.now(), error: !!m.error })),
+      .map((m) => ({
+        role: m.role,
+        content: m.content,
+        ts: Number(m.ts) || Date.now(),
+        error: !!m.error,
+        usage: m.usage && typeof m.usage === "object" ? m.usage : undefined,
+      })),
   };
 }
 
@@ -639,18 +774,16 @@ function buildRow(role, content, opts) {
     bubble.innerHTML = renderMarkdown(content);
   }
 
+  const hasUsage = !o.pending && role !== "user" && !!o.usage;
   const meta = document.createElement("div");
   meta.className = "meta";
-  if (!o.pending) {
-    meta.innerHTML =
-      "<span>" + timeOf(o.ts) + "</span>" +
-      '<span class="msg-tools"><button class="icon-btn" data-action="copy-msg" title="کپی پیام">⧉</button></span>';
-  }
+  if (!o.pending) meta.innerHTML = metaHtml(o.ts, hasUsage, o.usage);
 
   if (o.streaming) bubble.classList.add("streaming");
   col.appendChild(status);
   col.appendChild(bubble);
   col.appendChild(meta);
+  if (hasUsage) col.appendChild(buildUsagePop(o.usage));
   row.appendChild(avatar);
   row.appendChild(col);
   return row;
@@ -714,7 +847,9 @@ function renderConversation() {
       "</div>";
     logWrap.appendChild(empty);
   } else {
-    for (const m of chat.messages) logWrap.appendChild(buildRow(m.role, m.content, { ts: m.ts, error: m.error }));
+    for (const m of chat.messages) {
+      logWrap.appendChild(buildRow(m.role, m.content, { ts: m.ts, error: m.error, usage: m.usage }));
+    }
     if (isBusy(chat.id)) {
       // گفت‌وگویی که همین حالا در حال استریم است: متن رسیده تا این لحظه را نشان بده
       const partial = live.get(chat.id) || "";
@@ -827,21 +962,26 @@ function clearChatMessages(id) {
   renderConversation();
 }
 /* ---------- sending ---------- */
-const copyBtnHtml = '<span class="msg-tools"><button class="icon-btn" data-action="copy-msg" title="کپی پیام">⧉</button></span>';
-
-function fillRow(row, content, isError) {
+function fillRow(row, content, isError, usage) {
   row.classList.toggle("error", !!isError);
   delete row.dataset.pending;
   delete row.dataset.stream;
   const bubble = row.querySelector(".bubble");
   bubble.classList.remove("streaming");
   bubble.innerHTML = renderMarkdown(content);
-  row.querySelector(".meta").innerHTML = "<span>" + timeOf(Date.now()) + "</span>" + copyBtnHtml;
+
+  const col = row.querySelector(".msg-col");
+  const oldPop = col.querySelector(".usage-pop");
+  if (oldPop) oldPop.remove();
+  const hasUsage = !!usage && !isError;
+  if (hasUsage) col.appendChild(buildUsagePop(usage));
+
+  row.querySelector(".meta").innerHTML = metaHtml(Date.now(), hasUsage, usage);
   setStreamStatus(row, "");
 }
 
 /* پایان استریم: متن نهایی را در همان ردیف بنشان (اگر گفت‌وگوی دیگری باز است خبر بده) */
-function finishStream(chat, content, isError) {
+function finishStream(chat, content, isError, usage) {
   live.delete(chat.id);
   liveStatus.delete(chat.id);
   if (!chatById(chat.id)) return;   // گفت‌وگو در همین حال حذف شد
@@ -851,7 +991,7 @@ function finishStream(chat, content, isError) {
   }
   const row = streamRowFor(chat.id);
   if (row && row.isConnected) {
-    fillRow(row, content, isError);
+    fillRow(row, content, isError, usage);
     scrollDown(true);
     return;
   }
@@ -911,7 +1051,8 @@ async function fetchReplyJson(payload, signal) {
   const data = await res.json().catch(() => null);
   const reply = data && typeof data.reply === "string" ? data.reply.trim() : "";
   if (!reply) throw new Error("پاسخ خالی از سرور دریافت شد");
-  return reply;
+  const usage = data && data.usage && typeof data.usage === "object" ? data.usage : null;
+  return { reply, usage };
 }
 
 function showFailure(chat, partial, err) {
@@ -953,13 +1094,14 @@ async function send() {
   const payload = { messages: chat.messages.map((m) => ({ role: m.role, content: m.content })) };
 
   let received = "";      // متن پاسخ تا این لحظه
-  let serverError = "";   // خطای اعلام‌شده در میانه‌ی استریم
+  let serverError = "";   // error reported mid-stream
+  let usage = null;       // token usage + cost of this reply
 
   const stopAfterAbort = () => {
     const partial = received.trim();
     if (partial) {
-      chat.messages.push({ role: "assistant", content: partial, ts: Date.now() });
-      finishStream(chat, partial, false);
+      chat.messages.push({ role: "assistant", content: partial, ts: Date.now(), usage: usage || undefined });
+      finishStream(chat, partial, false, usage);
     } else {
       const row = streamRowFor(chat.id);
       if (row) row.remove();
@@ -989,6 +1131,8 @@ async function send() {
         bubble.innerHTML = PENDING_DOTS;
         setStreamStatus(row, "در حال بررسی نتایج…");
       }
+    } else if (evt.type === "usage") {
+      usage = evt.usage && typeof evt.usage === "object" ? evt.usage : null;
     } else if (evt.type === "error") {
       serverError = evt.message || "خطای نامشخص";
     }
@@ -999,17 +1143,17 @@ async function send() {
     const reply = received.trim();
     if (!reply && serverError) throw new Error(serverError);
     if (!reply) throw new Error("پاسخ خالی از سرور دریافت شد");
-    chat.messages.push({ role: "assistant", content: reply, ts: Date.now() });
-    finishStream(chat, reply, false);
+    chat.messages.push({ role: "assistant", content: reply, ts: Date.now(), usage: usage || undefined });
+    finishStream(chat, reply, false, usage);
     if (serverError) toast("هشدار سرور: " + serverError);
   } catch (err) {
     if (err && err.name === "AbortError") {
       stopAfterAbort();
     } else if (streamMissing(err) && !received.trim()) {
       try {                                     // استریم نبود؛ همان مسیر قدیمی
-        const reply = await fetchReplyJson(payload, ctrl.signal);
-        chat.messages.push({ role: "assistant", content: reply, ts: Date.now() });
-        finishStream(chat, reply, false);
+        const res = await fetchReplyJson(payload, ctrl.signal);
+        chat.messages.push({ role: "assistant", content: res.reply, ts: Date.now(), usage: res.usage || undefined });
+        finishStream(chat, res.reply, false, res.usage);
         toast("استریم در دسترس نبود؛ پاسخ یکجا دریافت شد");
       } catch (err2) {
         if (err2 && err2.name === "AbortError") stopAfterAbort();
@@ -1126,6 +1270,27 @@ $("#renameBtn").addEventListener("click", () => renameChat(state.activeId));
 titleEl.addEventListener("dblclick", () => renameChat(state.activeId));
 
 logWrap.addEventListener("click", (e) => {
+  const usageBtn = e.target.closest('[data-action="usage"]');
+  if (usageBtn) {
+    const col = usageBtn.closest(".msg-col");
+    const pop = col && col.querySelector(".usage-pop");
+    if (pop) {
+      const open = pop.hidden;
+      closeUsagePops(pop);          // فقط یک پاپآپ باز میماند
+      pop.hidden = !open;
+      setUsageOpen(usageBtn, open);
+    }
+    return;
+  }
+  const usageClose = e.target.closest('[data-action="usage-close"]');
+  if (usageClose) {
+    const pop = usageClose.closest(".usage-pop");
+    if (pop) {
+      pop.hidden = true;
+      setUsageOpen(pop.parentElement && pop.parentElement.querySelector(".usage-btn"), false);
+    }
+    return;
+  }
   const block = e.target.closest("[data-copy-block]");
   if (block) {
     const code = block.closest(".code").querySelector("pre code");
@@ -1151,6 +1316,7 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     createChat();
   } else if (e.key === "Escape") {
+    closeUsagePops(null);
     closeNav();
   }
 });
