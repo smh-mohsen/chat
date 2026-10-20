@@ -334,6 +334,34 @@ def _env_float(name: str, default: float) -> float:
 STREAM_DELAY = _env_float("STREAM_DELAY", 0.01)
 
 
+def _env_int(name: str, default: int) -> int:
+    """عدد صحیح را از محیط میخواند و در صورت مقدار نامعتبر، پیشفرض میدهد."""
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return max(0, int(str(raw).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+# فشردهسازی خودکار تاریخچه (compaction): وقتی تخمین توکن گفتوگو از این حد
+# بگذرد، پیامهای قدیمی با یک خلاصهی کوتاه جایگزین میشوند و آخرین
+# COMPACT_KEEP پیام دستنخورده میمانند.
+# برای خاموشکردن: COMPACT_TOKENS=0 در .env
+COMPACT_TOKENS = _env_int("COMPACT_TOKENS", 1000)
+COMPACT_KEEP = _env_int("COMPACT_KEEP", 6)
+
+# پرامپت خلاصهسازی: فقط چیزهایی را نگه میدارد که برای ادامهی گفتوگو لازم است.
+COMPACT_PROMPT = (
+    "You compress a chat history for another assistant. Summarize the "
+    "conversation below in at most 150 words, in the same language as the "
+    "conversation. Keep the user's goal, decisions made, file paths, names, "
+    "numbers, commands and code mentioned, and anything still unresolved. "
+    "No preamble, no headings, no follow-up questions."
+)
+
+
 def _price_for(model: str) -> dict:
     """قیمت مدل را پیدا میکند (اول تطابق دقیق، بعد تطابق پیشوندی)."""
     name = (model or "").strip().lower()
@@ -356,6 +384,128 @@ def _approx_tokens(value) -> int:
     )
     text = text.strip()
     return max(1, len(text) // 4) if text else 0
+
+
+# ---------- context compaction ----------
+def _history_tokens(messages: list[dict]) -> int:
+    """تخمین تقریبی توکن یک فهرست پیام (بدون تعریف ابزارها)."""
+    return sum(_approx_tokens(m.get("content")) for m in messages)
+
+
+def _split_system(messages: list[dict]) -> tuple[list[dict], list[dict]]:
+    """پرامپتهای سیستمی ابتدای فهرست را از تاریخچهی گفتوگو جدا میکند."""
+    head: list[dict] = []
+    rest = list(messages)
+    while rest and str(rest[0].get("role") or "") == "system":
+        head.append(rest.pop(0))
+    return head, rest
+
+
+def _over_budget(messages: list[dict]) -> bool:
+    """آیا تاریخچه آنقدر بلند است که فشردهسازی انجام شود؟
+
+    (هم از بودجه گذشته باشد و هم پیامهایی برای خلاصهکردن وجود داشته باشد.)
+    """
+    if COMPACT_TOKENS <= 0:
+        return False
+    _, rest = _split_system(messages)
+    return len(rest) > max(1, COMPACT_KEEP) and _history_tokens(rest) > COMPACT_TOKENS
+
+
+def _summarize_messages(old: list[dict]) -> str:
+    """پیامهای قدیمی را با یک درخواست غیراستریم به مدل خلاصه میکند."""
+    transcript = "\n".join(
+        f"{m.get('role', 'user')}: {m.get('content')}"
+        for m in old
+        if str(m.get("content") or "").strip()
+    )
+    if not transcript.strip():
+        return ""
+    resp = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": COMPACT_PROMPT},
+            {"role": "user", "content": transcript},
+        ],
+    )
+    return (resp.choices[0].message.content or "").strip()
+
+
+def _compact_text(info: dict) -> str:
+    """متن کوتاه فارسی برای نشاندادن فشردهسازی در رابط کاربری."""
+    bits = []
+    if info.get("summarized"):
+        bits.append(f"{info['summarized']} پیام قدیمی خلاصه شد")
+    if info.get("dropped"):
+        bits.append(f"{info['dropped']} پیام حذف شد")
+    saved = max(0, info.get("tokens_before", 0) - info.get("tokens_after", 0))
+    body = " و ".join(bits) if bits else "تاریخچه کوتاه شد"
+    return f"🗜️ فشردهسازی: {body} (≈{saved} توکن کمتر)"
+
+
+def _compact_messages(messages: list[dict]) -> tuple[list[dict], dict | None]:
+    """اگر تاریخچه از COMPACT_TOKENS بگذرد، پیامهای قدیمی را خلاصه میکند.
+
+    آخرین COMPACT_KEEP پیام دستنخورده میمانند و بقیه با یک پیام سیستمیِ خلاصه
+    جایگزین میشوند؛ پرامپت سیستمی اصلی همیشه حفظ میشود. اگر خلاصهسازی ممکن
+    نبود، قدیمیترین پیامها کنار گذاشته میشوند تا درخواست از بودجه بیرون نزند.
+    اگر هیچ پیامی خلاصه یا حذف نشود (مثلاً تنها پیام موجود یکی است)، درخواست
+    دستنخورده میماند و None برگردانده میشود.
+
+    خروجی: (پیامهای آمادهی ارسال، اطلاعات فشردهسازی یا None اگر لازم نبود)
+    """
+    if COMPACT_TOKENS <= 0 or not messages:
+        return messages, None
+
+    head, rest = _split_system(messages)
+    tokens_before = _history_tokens(rest)
+    if not rest or tokens_before <= COMPACT_TOKENS:
+        return messages, None
+
+    keep = max(1, COMPACT_KEEP)
+    if len(rest) > keep:
+        old, recent = rest[:-keep], rest[-keep:]
+    else:
+        old, recent = [], rest
+
+    summary = ""
+    if old:
+        try:
+            summary = _summarize_messages(old)
+        except Exception as e:  # خلاصه نشد؟ با کوتاهکردن ساده ادامه بده
+            print(f"[compact] خلاصهسازی ناموفق بود: {e}", flush=True)
+
+    compacted: list[dict] = []
+    if summary:
+        compacted.append(
+            {"role": "system", "content": f"خلاصهی گفتوگوی قبلی:\n{summary}"}
+        )
+    compacted += recent
+
+    # اگر حتی پس از خلاصه هم بیرون از بودجه بودیم، قدیمیترین پیامها را بردار
+    # (پیام خلاصه که همیشه اول فهرست است حفظ میشود).
+    floor = 2 if summary else 1
+    while len(compacted) > floor and _history_tokens(compacted) > COMPACT_TOKENS:
+        compacted.pop(1 if summary else 0)
+
+    summarized = len(old) if summary else 0
+    trimmed_recent = len(recent) - (len(compacted) - (1 if summary else 0))
+    dropped = (0 if summary else len(old)) + max(0, trimmed_recent)
+    if not summary and dropped <= 0:
+        # هیچ تغییری ممکن نشد (مثلاً کل تاریخچه یک پیام بزرگ است)؛ چیزی ادعا نکن
+        return messages, None
+    info = {
+        "threshold": COMPACT_TOKENS,
+        "keep": keep,
+        "summarized": summarized,
+        "dropped": dropped,
+        "summary": bool(summary),
+        "messages_before": len(rest),
+        "messages_after": len(compacted),
+        "tokens_before": tokens_before,
+        "tokens_after": _history_tokens(compacted),
+    }
+    return head + compacted, info
 
 
 class UsageTracker:
@@ -436,8 +586,13 @@ class UsageTracker:
 
 # ---------- agent loop ----------
 def run_agent(messages: list[dict], max_steps: int = 5) -> dict:
-    """پاسخ کامل را میسازد و مصرف توکن/هزینهی آن را هم برمیگرداند."""
+    """پاسخ کامل را میسازد و مصرف توکن/هزینهی آن را هم برمیگرداند.
+
+    اگر تاریخچه از COMPACT_TOKENS بگذرد، پیامهای قدیمی خلاصه میشوند و
+    اطلاعات آن در کلید «compaction» خروجی میآید (وگرنه None).
+    """
     tracker = UsageTracker()
+    messages, compaction = _compact_messages(messages)
     for _ in range(max_steps):
         steps_before = tracker.steps
         resp = client.chat.completions.create(
@@ -450,7 +605,7 @@ def run_agent(messages: list[dict], max_steps: int = 5) -> dict:
             content = msg.content or ""
             if tracker.steps == steps_before:  # سرور usage نداد
                 tracker.add_estimate(messages, content)
-            return {"reply": content, "usage": tracker.to_dict()}
+            return {"reply": content, "usage": tracker.to_dict(), "compaction": compaction}
 
         messages.append(msg.model_dump(exclude_none=True))
 
@@ -464,7 +619,11 @@ def run_agent(messages: list[dict], max_steps: int = 5) -> dict:
                 {"role": "tool", "tool_call_id": call.id, "content": result}
             )
 
-    return {"reply": "تعداد مراحل مجاز تمام شد.", "usage": tracker.to_dict()}
+    return {
+        "reply": "تعداد مراحل مجاز تمام شد.",
+        "usage": tracker.to_dict(),
+        "compaction": compaction,
+    }
 
 
 # ---------- streaming agent ----------
@@ -518,6 +677,7 @@ def stream_agent(messages: list[dict], max_steps: int = 5):
       {"type": "delta",  "text": "..."}     تکه‌ی تازه‌ی پاسخ
       {"type": "restart"}                   متن قبلی پاسخ نهایی نبود؛ از نو بنویس
       {"type": "usage",  "usage": {...}}     مصرف توکن و هزینه این پاسخ
+      {"type": "compact", "info": {...}}    تاریخچه فشرده شد (پیامهای قدیمی خلاصه شدند)
       {"type": "error",  "message": "..."}  خطا
       {"type": "done"}                      پایان موفق
 
@@ -525,6 +685,19 @@ def stream_agent(messages: list[dict], max_steps: int = 5):
     """
     tracker = UsageTracker()
     try:
+        # فشردهسازی تاریخچه پیش از شروع استریم؛ چون ممکن است یک درخواست
+        # اضافه به مدل بزند، اول وضعیت را به کاربر نشان میدهیم.
+        if _over_budget(messages):
+            yield sse({"type": "status", "text": "🗜️ فشردهسازی تاریخچهی گفتوگو..."})
+        messages, compaction = _compact_messages(messages)
+        if compaction:
+            yield sse(
+                {
+                    "type": "compact",
+                    "text": _compact_text(compaction),
+                    "info": compaction,
+                }
+            )
         for _ in range(max_steps):
             steps_before = tracker.steps
             calls: dict[int, dict] = {}
@@ -627,7 +800,7 @@ class ChatReq(BaseModel):
 
 @app.post("/chat")
 def chat(req: ChatReq):
-    """پاسخ یکجا: {"reply": "...", "usage": {توکن/هزینه}}"""
+    """پاسخ یکجا: {"reply": "...", "usage": {توکن/هزینه}, "compaction": {...}|null}"""
     msgs = [{"role": "system", "content": SYSTEM}] + req.messages
     return run_agent(msgs)
 

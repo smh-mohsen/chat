@@ -244,6 +244,11 @@ main{position:relative; z-index:10; flex:1; min-width:0; display:flex; flex-dire
   font-size:10px; color:var(--muted); background:var(--panel-3);
   border:1px solid var(--border); padding:1px 7px; border-radius:999px;
 }
+.compact-tag{
+  font-size:10px; color:var(--accent); background:var(--accent-soft);
+  border:1px solid var(--border); padding:1px 7px; border-radius:999px;
+  white-space:nowrap; cursor:help;
+}
 .usage-x{width:22px; height:22px; flex:none; border-radius:7px; color:var(--muted); font-size:11px}
 .usage-x:hover{background:var(--panel-3); color:var(--text)}
 .u-row{display:flex; align-items:center; gap:8px; font-size:12px; padding:3px 0}
@@ -412,7 +417,6 @@ kbd{
     <div class="hint">
       <kbd>Enter</kbd> ارسال · <kbd>Shift</kbd>+<kbd>Enter</kbd> خط جدید · <kbd>Ctrl</kbd>+<kbd>K</kbd> گفتوگوی جدید
       · گفتوگوها در همین مرورگر ذخیره میشوند
-      · پاسخ‌ها به‌صورت زنده و تکه‌تکه نوشته می‌شوند
     </div>
   </form>
 </main>
@@ -465,7 +469,7 @@ const fmtCost = (usd) => {
 
 const pctOf = (used, limit) => (limit ? Math.min(100, Math.round((used / limit) * 1000) / 10) : 0);
 
-function metaHtml(ts, hasUsage, usage) {
+function metaHtml(ts, hasUsage, usage, compaction) {
   let btn = "";
   if (hasUsage) {
     const title = "مصرف توکن و هزینه" + (usage
@@ -474,8 +478,25 @@ function metaHtml(ts, hasUsage, usage) {
     btn = '<button type="button" class="icon-btn usage-btn" data-action="usage" ' +
       'aria-label="مصرف توکن و هزینه" title="' + esc(title) + '">📊</button>';
   }
-  return "<span>" + timeOf(ts) + "</span>" + btn +
+  return "<span>" + timeOf(ts) + "</span>" + btn + compactHtml(compaction) +
     '<span class="msg-tools"><button class="icon-btn" data-action="copy-msg" title="کپی پیام">⧉</button></span>';
+}
+
+/* نشان «فشردهشده»: تاریخچهی گفتوگو پیش از فرستادن خلاصه شده است */
+function compactHtml(info) {
+  if (!info) return "";
+  const bits = [];
+  if (Number(info.summarized)) bits.push(fmtInt(info.summarized) + " پیام قدیمی خلاصه شد");
+  if (Number(info.dropped)) bits.push(fmtInt(info.dropped) + " پیام حذف شد");
+  const saved = Math.max(0, (Number(info.tokens_before) || 0) - (Number(info.tokens_after) || 0));
+  if (saved) bits.push("≈" + fmtInt(saved) + " توکن کمتر");
+  const parts = ["تاریخچهی این گفتوگو فشرده شد"];
+  if (Number(info.keep)) parts.push("آخرین " + fmtInt(info.keep) + " پیام دستنخورده ماند");
+  if (Number(info.threshold)) parts.push("بودجه: " + fmtInt(info.threshold) + " توکن");
+  if (bits.length) parts.push(bits.join(" · "));
+  if (!info.summary && Number(info.summarized) === 0 && Number(info.dropped))
+    parts.push("(خلاصهسازی ممکن نشد؛ پیامهای قدیمی حذف شدند)");
+  return '<span class="compact-tag" title="' + esc(parts.join(" — ")) + '">🗜️  فشرده شده</span>';
 }
 
 function usageHtml(u) {
@@ -657,6 +678,7 @@ function normalizeChat(c) {
         ts: Number(m.ts) || Date.now(),
         error: !!m.error,
         usage: m.usage && typeof m.usage === "object" ? m.usage : undefined,
+        compacted: m.compacted && typeof m.compacted === "object" ? m.compacted : undefined,
       })),
   };
 }
@@ -777,7 +799,7 @@ function buildRow(role, content, opts) {
   const hasUsage = !o.pending && role !== "user" && !!o.usage;
   const meta = document.createElement("div");
   meta.className = "meta";
-  if (!o.pending) meta.innerHTML = metaHtml(o.ts, hasUsage, o.usage);
+  if (!o.pending) meta.innerHTML = metaHtml(o.ts, hasUsage, o.usage, o.compaction);
 
   if (o.streaming) bubble.classList.add("streaming");
   col.appendChild(status);
@@ -848,7 +870,7 @@ function renderConversation() {
     logWrap.appendChild(empty);
   } else {
     for (const m of chat.messages) {
-      logWrap.appendChild(buildRow(m.role, m.content, { ts: m.ts, error: m.error, usage: m.usage }));
+      logWrap.appendChild(buildRow(m.role, m.content, { ts: m.ts, error: m.error, usage: m.usage, compaction: m.compacted }));
     }
     if (isBusy(chat.id)) {
       // گفت‌وگویی که همین حالا در حال استریم است: متن رسیده تا این لحظه را نشان بده
@@ -962,7 +984,7 @@ function clearChatMessages(id) {
   renderConversation();
 }
 /* ---------- sending ---------- */
-function fillRow(row, content, isError, usage) {
+function fillRow(row, content, isError, usage, compaction) {
   row.classList.toggle("error", !!isError);
   delete row.dataset.pending;
   delete row.dataset.stream;
@@ -976,12 +998,12 @@ function fillRow(row, content, isError, usage) {
   const hasUsage = !!usage && !isError;
   if (hasUsage) col.appendChild(buildUsagePop(usage));
 
-  row.querySelector(".meta").innerHTML = metaHtml(Date.now(), hasUsage, usage);
+  row.querySelector(".meta").innerHTML = metaHtml(Date.now(), hasUsage, usage, compaction);
   setStreamStatus(row, "");
 }
 
 /* پایان استریم: متن نهایی را در همان ردیف بنشان (اگر گفت‌وگوی دیگری باز است خبر بده) */
-function finishStream(chat, content, isError, usage) {
+function finishStream(chat, content, isError, usage, compaction) {
   live.delete(chat.id);
   liveStatus.delete(chat.id);
   if (!chatById(chat.id)) return;   // گفت‌وگو در همین حال حذف شد
@@ -991,7 +1013,7 @@ function finishStream(chat, content, isError, usage) {
   }
   const row = streamRowFor(chat.id);
   if (row && row.isConnected) {
-    fillRow(row, content, isError, usage);
+    fillRow(row, content, isError, usage, compaction);
     scrollDown(true);
     return;
   }
@@ -1052,14 +1074,15 @@ async function fetchReplyJson(payload, signal) {
   const reply = data && typeof data.reply === "string" ? data.reply.trim() : "";
   if (!reply) throw new Error("پاسخ خالی از سرور دریافت شد");
   const usage = data && data.usage && typeof data.usage === "object" ? data.usage : null;
-  return { reply, usage };
+  const compaction = data && data.compaction && typeof data.compaction === "object" ? data.compaction : null;
+  return { reply, usage, compaction };
 }
 
-function showFailure(chat, partial, err) {
+function showFailure(chat, partial, err, compaction) {
   const msg = "⚠️ ارتباط با سرور برقرار نشد: " + ((err && err.message) || String(err));
   const content = partial ? partial + "\n\n" + msg : msg;
-  chat.messages.push({ role: "assistant", content, ts: Date.now(), error: true });
-  finishStream(chat, content, true);
+  chat.messages.push({ role: "assistant", content, ts: Date.now(), error: true, compacted: compaction || undefined });
+  finishStream(chat, content, true, null, compaction);
 }
 
 async function send() {
@@ -1096,12 +1119,13 @@ async function send() {
   let received = "";      // متن پاسخ تا این لحظه
   let serverError = "";   // error reported mid-stream
   let usage = null;       // token usage + cost of this reply
+  let compaction = null;  // history compaction done by the server, if any
 
   const stopAfterAbort = () => {
     const partial = received.trim();
     if (partial) {
-      chat.messages.push({ role: "assistant", content: partial, ts: Date.now(), usage: usage || undefined });
-      finishStream(chat, partial, false, usage);
+      chat.messages.push({ role: "assistant", content: partial, ts: Date.now(), usage: usage || undefined, compacted: compaction || undefined });
+      finishStream(chat, partial, false, usage, compaction);
     } else {
       const row = streamRowFor(chat.id);
       if (row) row.remove();
@@ -1131,6 +1155,12 @@ async function send() {
         bubble.innerHTML = PENDING_DOTS;
         setStreamStatus(row, "در حال بررسی نتایج…");
       }
+    } else if (evt.type === "compact") {
+      compaction = evt.info && typeof evt.info === "object" ? evt.info : null;
+      liveStatus.set(chat.id, evt.text || "");
+      live.set(chat.id, received);
+      if (active && row) setStreamStatus(row, evt.text || "");
+      if (evt.text && active) toast(evt.text);
     } else if (evt.type === "usage") {
       usage = evt.usage && typeof evt.usage === "object" ? evt.usage : null;
     } else if (evt.type === "error") {
@@ -1143,8 +1173,8 @@ async function send() {
     const reply = received.trim();
     if (!reply && serverError) throw new Error(serverError);
     if (!reply) throw new Error("پاسخ خالی از سرور دریافت شد");
-    chat.messages.push({ role: "assistant", content: reply, ts: Date.now(), usage: usage || undefined });
-    finishStream(chat, reply, false, usage);
+    chat.messages.push({ role: "assistant", content: reply, ts: Date.now(), usage: usage || undefined, compacted: compaction || undefined });
+    finishStream(chat, reply, false, usage, compaction);
     if (serverError) toast("هشدار سرور: " + serverError);
   } catch (err) {
     if (err && err.name === "AbortError") {
@@ -1152,15 +1182,15 @@ async function send() {
     } else if (streamMissing(err) && !received.trim()) {
       try {                                     // استریم نبود؛ همان مسیر قدیمی
         const res = await fetchReplyJson(payload, ctrl.signal);
-        chat.messages.push({ role: "assistant", content: res.reply, ts: Date.now(), usage: res.usage || undefined });
-        finishStream(chat, res.reply, false, res.usage);
+        chat.messages.push({ role: "assistant", content: res.reply, ts: Date.now(), usage: res.usage || undefined, compacted: res.compaction || undefined });
+        finishStream(chat, res.reply, false, res.usage, res.compaction);
         toast("استریم در دسترس نبود؛ پاسخ یکجا دریافت شد");
       } catch (err2) {
         if (err2 && err2.name === "AbortError") stopAfterAbort();
-        else showFailure(chat, "", err2);
+        else showFailure(chat, "", err2, compaction);
       }
     } else {
-      showFailure(chat, received.trim(), err);
+      showFailure(chat, received.trim(), err, compaction);
     }
   } finally {
     live.delete(chat.id);
