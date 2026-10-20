@@ -1,5 +1,6 @@
 import json
 import os
+import time
 
 from dotenv import load_dotenv
 
@@ -319,6 +320,20 @@ PER_TOKENS = 1_000_000
 STREAM_USAGE = os.environ.get("STREAM_USAGE", "1") != "0"
 
 
+def _env_float(name: str, default: float) -> float:
+    """عدد اعشاری را از محیط میخواند و در صورت مقدار نامعتبر، پیشفرض میدهد."""
+    try:
+        return max(0.0, float(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+# تأخیر کوتاه (به ثانیه) بین تکههای متن تا پاسخ نرم و یکنواخت نمایش داده شود؛
+# مدل گاهی چند تکه را با هم میفرستد و همین باعث پرش متن میشود.
+# برای خاموشکردن: STREAM_DELAY=0 در .env
+STREAM_DELAY = _env_float("STREAM_DELAY", 0.01)
+
+
 def _price_for(model: str) -> dict:
     """قیمت مدل را پیدا میکند (اول تطابق دقیق، بعد تطابق پیشوندی)."""
     name = (model or "").strip().lower()
@@ -505,6 +520,8 @@ def stream_agent(messages: list[dict], max_steps: int = 5):
       {"type": "usage",  "usage": {...}}     مصرف توکن و هزینه این پاسخ
       {"type": "error",  "message": "..."}  خطا
       {"type": "done"}                      پایان موفق
+
+    بین تکههای متن یک تأخیر کوتاه (STREAM_DELAY) میگذاریم تا نمایش نرم باشد.
     """
     tracker = UsageTracker()
     try:
@@ -523,6 +540,9 @@ def stream_agent(messages: list[dict], max_steps: int = 5):
                 if delta.content:
                     text += delta.content
                     yield sse({"type": "delta", "text": delta.content})
+                    if STREAM_DELAY:
+                        # چند میلیثانیه صبر تا مرورگر تکهها را یکییکی و نرم بنویسد
+                        time.sleep(STREAM_DELAY)
                 for call in delta.tool_calls or []:
                     slot = calls.setdefault(
                         call.index or 0, {"id": "", "name": "", "arguments": ""}
