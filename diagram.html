@@ -58,14 +58,16 @@ input,textarea{font:inherit; color:inherit}
 :focus-visible{outline:2px solid var(--accent); outline-offset:2px}
 
 /* ---------- layout: چت ۲۰٪ راست، بوم ۸۰٪ چپ ---------- */
-#app{display:flex; height:100vh; height:100dvh}
+/* چیدمان صریح (direction + order) تا بعد از لود بوم جابه‌جا نشود */
+#app{display:flex; flex-direction:row; direction:rtl; height:100vh; height:100dvh}
 #chatPanel{
+  order:1;
   flex:0 0 20%; min-width:300px; max-width:440px;
   display:flex; flex-direction:column; min-height:0;
   background:var(--sidebar-bg); backdrop-filter:blur(16px) saturate(140%);
   border-left:1px solid var(--border);
 }
-#boardWrap{flex:1; min-width:0; display:flex; flex-direction:column; background:var(--panel)}
+#boardWrap{order:2; flex:1; min-width:0; display:flex; flex-direction:column; background:var(--panel)}
 #excalidraw-root{flex:1; min-height:0; position:relative}
 #excalidraw-root > div{width:100%; height:100%}
 
@@ -724,6 +726,8 @@ input,textarea{font:inherit; color:inherit}
       if (busy) return;
       load();
       renderConversation();
+      /* صحنه‌ی بوم هم با گفت‌وگوی فعال عوض شود (تازه = خالی) */
+      if (typeof window.__diagramLoadScene === "function") window.__diagramLoadScene(state.activeId);
     }
   });
 
@@ -741,18 +745,48 @@ input,textarea{font:inherit; color:inherit}
    صحنه به‌صورت خودکار در localStorage ذخیره و بازیابی می‌شود.
    ============================================================ */
 const SCENE_KEY = "excalidraw.diagram.v1";
+const ACTIVE_KEY = "chatkit.active.v1";
 const loadingEl = document.getElementById("boardLoading");
 const errorEl = document.getElementById("boardError");
 const savedAtEl = document.getElementById("savedAt");
 
-function loadScene() {
+/* صحنه جدا برای هر گفت‌وگو: گفت‌وگوی جدید بوم خالی دارد */
+const sceneKeyFor = (chatId) => chatId ? SCENE_KEY + ":" + chatId : SCENE_KEY;
+const activeChatId = () => {
+  try { return localStorage.getItem(ACTIVE_KEY) || ""; } catch (e) { return ""; }
+};
+let currentChatId = activeChatId();
+let latestScene = null; // آخرین صحنه از onChange، برای فلاش پیش از تعویض گفت‌وگو
+
+function readScene(key) {
   try {
-    const raw = localStorage.getItem(SCENE_KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return null;
     const data = JSON.parse(raw);
     if (data && Array.isArray(data.elements)) return data;
   } catch (e) { console.warn("خواندن صحنه‌ی نمودار ممکن نشد:", e); }
   return null;
+}
+function writeScene(key, scene) {
+  if (!scene) return;
+  try {
+    localStorage.setItem(key, JSON.stringify({ elements: scene.elements, appState: scene.appState, files: scene.files }));
+  } catch (e) {
+    /* فایل‌های تصویری جا نشد (سقف localStorage)؛ بدون آن‌ها ذخیره کن */
+    try { localStorage.setItem(key, JSON.stringify({ elements: scene.elements, appState: scene.appState })); }
+    catch (e2) { console.warn("ذخیره‌ی صحنه ممکن نشد:", e2); }
+  }
+}
+function loadScene() {
+  const perChat = readScene(sceneKeyFor(currentChatId));
+  if (perChat) return perChat;
+  /* مهاجرت یک‌باره: صحنه‌ی قدیمیِ مشترک را به گفت‌وگوی فعال بده */
+  const legacy = readScene(SCENE_KEY);
+  if (legacy && currentChatId) {
+    writeScene(sceneKeyFor(currentChatId), legacy);
+    try { localStorage.removeItem(SCENE_KEY); } catch (e) { /* نادیده بگیر */ }
+  }
+  return legacy;
 }
 
 function markSaved() {
@@ -762,9 +796,43 @@ function markSaved() {
 }
 
 /* ---------- ساختن عناصر فرایند از روی قدم‌ها (چیدمان قطعی) ---------- */
-const BOX_W = 360, BOX_H = 100, GAP_Y = 72, TITLE_H = 44;
+/* علت باگ متن: Excalidraw ‏0.18‏ برای متن lineHeight و autoResize می‌خواهد و
+   ابعاد را با canvas اندازه می‌گیرد؛ بدون lineHeight ارتفاع NaN می‌شد و متن
+   تا رفرش (که ابعاد را بازسازی می‌کند) دیده نمی‌شد. اینجا همان اندازه‌گیری
+   را موقع ساختن انجام می‌دهیم؛ baseline در 0.18 فیلد متن نیست. */
+const BOX_W = 360, BOX_H = 100, GAP_Y = 72;
+const TEXT_LINE_HEIGHT = 1.25; // مقدار پیش‌فرض Excalidraw
+const FONT_FAMILY_TEXT = "Helvetica, Segoe UI Emoji"; // fontFamily: 2
 const elUid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 const elNonce = () => Math.floor(Math.random() * 2147483647);
+
+let measureCanvas = null;
+function measureLineWidth(text, fontSize) {
+  if (!measureCanvas) measureCanvas = document.createElement("canvas");
+  const ctx = measureCanvas.getContext("2d");
+  ctx.font = fontSize + "px " + FONT_FAMILY_TEXT;
+  return ctx.measureText(text).width;
+}
+function wrapLines(text, fontSize, maxWidth) {
+  const out = [];
+  for (const rawLine of String(text).split("\n")) {
+    const words = rawLine.split(/\s+/).filter(Boolean);
+    if (!words.length) { out.push(" "); continue; }
+    let line = words[0];
+    for (let i = 1; i < words.length; i++) {
+      const next = line + " " + words[i];
+      if (measureLineWidth(next, fontSize) <= maxWidth) line = next;
+      else { out.push(line); line = words[i]; }
+    }
+    out.push(line);
+  }
+  return out;
+}
+function measureTextBlock(text, fontSize, maxWidth) {
+  const lines = wrapLines(text, fontSize, maxWidth);
+  const width = Math.max(0, ...lines.map((l) => measureLineWidth(l, fontSize)));
+  return { lines, text: lines.join("\n"), width, height: lines.length * fontSize * TEXT_LINE_HEIGHT };
+}
 
 function baseEl(el) {
   return Object.assign({
@@ -781,29 +849,34 @@ function buildProcessElements(diagram, topY) {
   const cx = 0; // مرکز افقی
   let y = topY;
   if (diagram.title) {
+    const m = measureTextBlock(diagram.title, 24, BOX_W);
+    const w = Math.max(m.width, 1);
     els.push(baseEl({
-      id: elUid(), type: "text", x: cx - BOX_W / 2, y, width: BOX_W, height: TITLE_H,
-      text: diagram.title, originalText: diagram.title,
+      id: elUid(), type: "text", x: cx - w / 2, y, width: w, height: m.height,
+      text: m.text, originalText: diagram.title,
       fontSize: 24, fontFamily: 2, textAlign: "center", verticalAlign: "middle",
-      baseline: TITLE_H - 8, containerId: null, boundElements: [],
+      lineHeight: TEXT_LINE_HEIGHT, autoResize: true, containerId: null, boundElements: [],
     }));
-    y += TITLE_H + 24;
+    y += m.height + 24;
   }
   diagram.steps.forEach((step, i) => {
     const rectId = elUid(), textId = elUid();
-    const text = step.desc ? step.title + "\n" + step.desc : step.title;
+    const fullText = step.desc ? step.title + "\n" + step.desc : step.title;
+    const m = measureTextBlock(fullText, 18, BOX_W - 10); // BOUND_TEXT_PADDING=5 هر طرف
+    const rectH = Math.max(BOX_H, m.height + 28);
     els.push(baseEl({
-      id: rectId, type: "rectangle", x: cx - BOX_W / 2, y, width: BOX_W, height: BOX_H,
+      id: rectId, type: "rectangle", x: cx - BOX_W / 2, y, width: BOX_W, height: rectH,
       strokeColor: "#5b5bd6", backgroundColor: "#e0e7ff",
       roundness: { type: 3 }, boundElements: [{ id: textId, type: "text" }],
     }));
     els.push(baseEl({
-      id: textId, type: "text", x: cx - BOX_W / 2 + 12, y: y + 10, width: BOX_W - 24, height: BOX_H - 20,
-      text, originalText: text,
+      id: textId, type: "text",
+      x: cx - m.width / 2, y: y + (rectH - m.height) / 2, width: m.width, height: m.height,
+      text: m.text, originalText: fullText,
       fontSize: 18, fontFamily: 2, textAlign: "center", verticalAlign: "middle",
-      baseline: BOX_H - 28, containerId: rectId, boundElements: [],
+      lineHeight: TEXT_LINE_HEIGHT, autoResize: true, containerId: rectId, boundElements: [],
     }));
-    y += BOX_H;
+    y += rectH;
     if (i < diagram.steps.length - 1) {
       els.push(baseEl({
         id: elUid(), type: "arrow", x: cx, y: y + 6, width: 0, height: GAP_Y - 12,
@@ -850,20 +923,14 @@ async function boot() {
     const theme = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
 
     const onChange = useCallback((elements, appState, files) => {
+      const slimAppState = {
+        viewBackgroundColor: appState.viewBackgroundColor,
+        gridSize: appState.gridSize,
+      };
+      latestScene = { elements, appState: slimAppState, files };
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
-        const slimAppState = {
-          viewBackgroundColor: appState.viewBackgroundColor,
-          gridSize: appState.gridSize,
-        };
-        try {
-          localStorage.setItem(SCENE_KEY, JSON.stringify({ elements, appState: slimAppState, files }));
-        } catch (e) {
-          /* فایل‌های تصویری جا نشد (سقف localStorage)؛ بدون آن‌ها ذخیره کن */
-          try {
-            localStorage.setItem(SCENE_KEY, JSON.stringify({ elements, appState: slimAppState }));
-          } catch (e2) { console.warn("ذخیره‌ی صحنه ممکن نشد:", e2); return; }
-        }
+        writeScene(sceneKeyFor(currentChatId), latestScene);
         markSaved();
       }, 500);
     }, []);
@@ -872,9 +939,32 @@ async function boot() {
       if (!api) return;
       if (!confirm("همه‌ی عناصر بوم پاک شود؟")) return;
       api.updateScene({ elements: [], appState: {} });
-      try { localStorage.removeItem(SCENE_KEY); } catch (e) { /* نادیده بگیر */ }
+      try { localStorage.removeItem(sceneKeyFor(currentChatId)); } catch (e) { /* نادیده بگیر */ }
+      latestScene = { elements: [], appState: {}, files: undefined };
       if (savedAtEl) savedAtEl.textContent = "";
     }, [api]);
+
+    /* ذخیره‌ی فوری صحنه‌ی فعلی با کلید گفت‌وگوی فعلی، پیش از تعویض گفت‌وگو */
+    const flushSave = useCallback(() => {
+      if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+      if (latestScene) writeScene(sceneKeyFor(currentChatId), latestScene);
+    }, []);
+
+    /* تعویض صحنه با گفت‌وگوی فعال؛ گفت‌وگوی تازه بوم خالی دارد */
+    const loadSceneForChat = useCallback((chatId) => {
+      if (!api) return false;
+      flushSave();
+      currentChatId = chatId || "";
+      const scene = readScene(sceneKeyFor(currentChatId));
+      api.updateScene({
+        elements: scene ? scene.elements : [],
+        appState: scene && scene.appState ? scene.appState : {},
+      });
+      if (scene) markSaved();
+      else if (savedAtEl) savedAtEl.textContent = "";
+      api.scrollToContent();
+      return true;
+    }, [api, flushSave]);
 
     /* کشیدن فرایند روی بوم: زیرِ نقاشی‌های موجود، بعد اسکرول به آن */
     const drawDiagram = useCallback((diagram) => {
@@ -887,6 +977,7 @@ async function boot() {
       }
       const fresh = buildProcessElements(diagram, topY);
       api.updateScene({ elements: [...existing, ...fresh] });
+      if (typeof api.refresh === "function") api.refresh();
       api.scrollToContent();
       return true;
     }, [api]);
@@ -896,6 +987,7 @@ async function boot() {
       window.__diagramDraw = drawDiagram;
       window.__excalidrawAPI = api;
     }, [drawDiagram, api]);
+    useEffect(() => { window.__diagramLoadScene = loadSceneForChat; }, [loadSceneForChat]);
     useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
 
     return React.createElement(
