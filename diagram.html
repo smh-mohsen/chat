@@ -1,0 +1,753 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#5b5bd6">
+<title>نمودار — چت هوشمند</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
+<!-- استایل Excalidraw از CDN (نسخه‌ی prod هم‌خانواده‌ی فایل JS) -->
+<link rel="stylesheet" href="https://esm.sh/@excalidraw/excalidraw@0.18.0/dist/prod/index.css">
+<style>
+/* ---------- theme tokens (هم‌خانواده‌ی index.html) ---------- */
+:root{
+  --bg:#eef1f7;
+  --sidebar-bg: rgba(255,255,255,.72);
+  --panel:#ffffff;
+  --panel-2:#f4f6fb;
+  --panel-3:#eceff7;
+  --text:#131725;
+  --muted:#6b7280;
+  --border:#e2e7f1;
+  --accent:#5b5bd6;
+  --accent-soft: rgba(91,91,214,.10);
+  --user-1:#6366f1;
+  --user-2:#9b5cf6;
+  --danger:#e11d48;
+  --shadow-sm:0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.07);
+  --shadow:0 18px 42px rgba(16,24,40,.12);
+  --radius:20px;
+}
+html[data-theme="dark"]{
+  --bg:#0d1017;
+  --sidebar-bg: rgba(20,25,34,.78);
+  --panel:#161b24;
+  --panel-2:#1c222d;
+  --panel-3:#222a37;
+  --text:#e9edf5;
+  --muted:#94a1b5;
+  --border:#27303e;
+  --accent:#8f8ff7;
+  --accent-soft: rgba(143,143,247,.14);
+  --danger:#fb7185;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.5);
+  --shadow:0 22px 48px rgba(0,0,0,.5);
+}
+*{box-sizing:border-box}
+[hidden]{display:none !important}
+html,body{height:100%}
+body{
+  margin:0; height:100vh; height:100dvh; overflow:hidden;
+  color:var(--text); background:var(--bg);
+  font-family:"Vazirmatn","IRANSans","Segoe UI",system-ui,-apple-system,Tahoma,sans-serif;
+  font-size:15px; line-height:1.7;
+  -webkit-font-smoothing:antialiased;
+}
+button{font:inherit; color:inherit; cursor:pointer; border:0; background:none}
+input,textarea{font:inherit; color:inherit}
+:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+
+/* ---------- layout: چت ۲۰٪ راست، بوم ۸۰٪ چپ ---------- */
+#app{display:flex; height:100vh; height:100dvh}
+#chatPanel{
+  flex:0 0 20%; min-width:300px; max-width:440px;
+  display:flex; flex-direction:column; min-height:0;
+  background:var(--sidebar-bg); backdrop-filter:blur(16px) saturate(140%);
+  border-left:1px solid var(--border);
+}
+#boardWrap{flex:1; min-width:0; display:flex; flex-direction:column; background:var(--panel)}
+#excalidraw-root{flex:1; min-height:0; position:relative}
+#excalidraw-root > div{width:100%; height:100%}
+
+/* ---------- chat panel ---------- */
+.chat-head{
+  display:flex; align-items:center; gap:10px; padding:12px 14px;
+  border-bottom:1px solid var(--border);
+}
+.chat-head .titles{min-width:0; flex:1}
+.chat-head b{display:block; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.chat-head span{display:block; font-size:11.5px; color:var(--muted)}
+.mini-btn{
+  display:inline-flex; align-items:center; gap:5px; padding:6px 10px; border-radius:10px;
+  font-size:12.5px; color:var(--muted); text-decoration:none; white-space:nowrap;
+  transition:background .15s, color .15s;
+}
+.mini-btn:hover{background:var(--panel-2); color:var(--text)}
+.mini-btn.accent{color:var(--accent); background:var(--accent-soft)}
+#dlog{flex:1; overflow-y:auto; padding:14px 12px 6px; min-height:0}
+#dlog::-webkit-scrollbar{width:9px}
+#dlog::-webkit-scrollbar-thumb{background:var(--border); border-radius:9px; border:2px solid transparent; background-clip:content-box}
+.drow{display:flex; gap:8px; margin:12px 0; animation:rise .28s ease both}
+.drow.user{flex-direction:row-reverse}
+@keyframes rise{from{opacity:0; transform:translateY(8px)} to{opacity:1; transform:none}}
+.davatar{
+  width:30px; height:30px; flex:0 0 30px; display:grid; place-items:center; font-size:14px;
+  border-radius:10px; box-shadow:var(--shadow-sm);
+}
+.drow.user .davatar{background:linear-gradient(135deg,var(--user-1),var(--user-2)); color:#fff}
+.drow.assistant .davatar{background:var(--panel); border:1px solid var(--border)}
+.dcol{min-width:0; max-width:88%; display:flex; flex-direction:column; gap:3px}
+.drow.user .dcol{align-items:flex-end}
+.dbubble{
+  padding:9px 12px; border-radius:14px; box-shadow:var(--shadow-sm); overflow-wrap:anywhere;
+  word-break:break-word; background:var(--panel); border:1px solid var(--border);
+  font-size:13.5px; line-height:1.7;
+}
+.drow.user .dbubble{
+  color:#fff; border:0; border-top-left-radius:14px; border-top-right-radius:5px;
+  background:linear-gradient(135deg,var(--user-1),var(--user-2));
+}
+.drow.assistant .dbubble{border-top-right-radius:14px; border-top-left-radius:5px}
+.dbubble > :first-child{margin-top:0}
+.dbubble > :last-child{margin-bottom:0}
+.dbubble p{margin:.45em 0}
+.dbubble h3{margin:.7em 0 .3em; font-size:14px}
+.dbubble ul, .dbubble ol{margin:.4em 0; padding-inline-start:1.3em}
+.dbubble code{
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.86em;
+  background:var(--panel-3); padding:2px 6px; border-radius:7px; direction:ltr; unicode-bidi:embed;
+}
+.drow.user .dbubble code{background:rgba(255,255,255,.2)}
+.dbubble a{color:var(--accent); text-decoration:none; border-bottom:1px dashed currentColor}
+.drow.user .dbubble a{color:#fff}
+.dbubble .code{
+  margin:.6em 0; border:1px solid var(--border); border-radius:10px; overflow:hidden; background:var(--panel-2);
+}
+.dbubble pre{margin:0; padding:10px; overflow-x:auto; direction:ltr; text-align:left}
+.dbubble pre code{background:none; padding:0; font-size:12px; line-height:1.6; white-space:pre}
+.dmeta{font-size:10.5px; color:var(--muted); padding-inline:4px}
+.drow.error .dbubble{border-color:var(--danger); color:var(--danger); background:rgba(225,29,72,.06)}
+.dbubble.streaming{border-color:var(--accent)}
+.dbubble.streaming::after{
+  content:"▍"; margin-inline-start:2px; color:var(--accent); font-weight:700;
+  animation:caret 1.05s steps(1,end) infinite;
+}
+@keyframes caret{0%,55%{opacity:1} 56%,100%{opacity:.12}}
+.dempty{color:var(--muted); font-size:13px; text-align:center; padding:32px 12px}
+.typing{display:inline-flex; gap:4px; align-items:center; padding:2px 0}
+.typing i{
+  width:7px; height:7px; border-radius:50%; background:var(--accent); display:block;
+  animation:bounce 1.15s infinite ease-in-out;
+}
+.typing i:nth-child(2){animation-delay:.15s}
+.typing i:nth-child(3){animation-delay:.3s}
+@keyframes bounce{0%,80%,100%{transform:translateY(0); opacity:.45} 40%{transform:translateY(-5px); opacity:1}}
+.dcomposer{padding:10px 12px 14px}
+.dcomposer-inner{
+  display:flex; align-items:flex-end; gap:8px;
+  padding:7px 7px 7px 11px; border-radius:16px; background:var(--panel);
+  border:1px solid var(--border); box-shadow:var(--shadow); transition:border-color .2s;
+}
+.dcomposer-inner:focus-within{border-color:var(--accent)}
+#dinput{
+  flex:1; resize:none; min-height:24px; max-height:140px; padding:7px 4px;
+  border:0; background:none; outline:none; line-height:1.6; font-size:13.5px;
+}
+#dinput::placeholder{color:var(--muted)}
+.cbtn{
+  height:38px; padding:0 14px; border-radius:12px; font-weight:600; font-size:13.5px;
+  display:flex; align-items:center; gap:6px;
+}
+#dsend{background:linear-gradient(135deg,var(--user-1),var(--user-2)); color:#fff}
+#dsend:disabled{opacity:.55; cursor:default}
+#dstop{background:rgba(225,29,72,.12); color:var(--danger); padding:0 12px}
+.dhint{margin:7px auto 0; color:var(--muted); font-size:11px; text-align:center}
+
+/* ---------- board bar ---------- */
+#boardBar{
+  display:flex; align-items:center; gap:10px; padding:9px 14px;
+  background:var(--sidebar-bg); backdrop-filter:blur(16px) saturate(140%);
+  border-bottom:1px solid var(--border);
+}
+#boardBar b{font-size:14px}
+#savedAt{font-size:11.5px; color:var(--muted)}
+#boardBar .grow{flex:1}
+#boardLoading, #boardError{
+  position:absolute; inset:0; display:grid; place-items:center; text-align:center;
+  padding:20px; color:var(--muted); font-size:14px; background:var(--panel);
+}
+#boardError button{
+  margin-top:10px; padding:8px 16px; border-radius:11px; font-weight:600; color:#fff;
+  background:linear-gradient(135deg,var(--user-1),var(--user-2));
+}
+#toast{
+  position:fixed; z-index:80; bottom:22px; right:50%; transform:translate(50%,20px);
+  background:var(--text); color:var(--bg); font-size:13px; padding:9px 16px; border-radius:999px;
+  box-shadow:var(--shadow); opacity:0; pointer-events:none; transition:opacity .2s, transform .2s;
+}
+#toast.show{opacity:.96; transform:translate(50%,0)}
+
+/* ---------- responsive ---------- */
+@media (max-width:900px){
+  #app{flex-direction:column}
+  #chatPanel{
+    flex:0 0 42%; min-width:0; max-width:none; width:100%;
+    border-left:0; border-bottom:1px solid var(--border);
+  }
+  #boardWrap{flex:1; min-height:0}
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:.01ms !important; transition-duration:.01ms !important}
+}
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@19.0.0",
+    "react/jsx-runtime": "https://esm.sh/react@19.0.0/jsx-runtime",
+    "react-dom": "https://esm.sh/react-dom@19.0.0",
+    "react-dom/client": "https://esm.sh/react-dom@19.0.0/client"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app">
+  <!-- ==================== chat (۲۰٪ راست) ==================== -->
+  <aside id="chatPanel">
+    <div class="chat-head">
+      <div class="titles">
+        <b id="diagramChatTitle">گفتوگوی جدید</b>
+        <span>چت — گفت‌وگوی فعال صفحه‌ی اصلی</span>
+      </div>
+      <a class="mini-btn" href="/" target="_blank" rel="noopener" title="باز کردن چت اصلی در تب جدید">↩ چت اصلی</a>
+    </div>
+
+    <div id="dlog"><div id="dlogWrap"></div></div>
+
+    <form class="dcomposer" id="dform">
+      <div class="dcomposer-inner">
+        <textarea id="dinput" rows="1" placeholder="پیامت را بنویس… (Shift+Enter برای خط جدید)" dir="auto"></textarea>
+        <button type="button" class="cbtn" id="dstop" hidden>■ توقف</button>
+        <button type="submit" class="cbtn" id="dsend">ارسال</button>
+      </div>
+      <div class="dhint">Enter ارسال · گفت‌وگو با صفحه‌ی اصلی مشترک است</div>
+    </form>
+  </aside>
+
+  <!-- ==================== board (۸۰٪ چپ) ==================== -->
+  <main id="boardWrap" dir="ltr" lang="en">
+    <div id="boardBar">
+      <b>📊 نمودار</b>
+      <span id="savedAt"></span>
+      <span class="grow"></span>
+      <button class="mini-btn" id="clearBoardBtn" title="پاک کردن همه‌ی عناصر بوم">🧹 پاک کردن بوم</button>
+      <a class="mini-btn" href="/" target="_blank" rel="noopener">↩ بازگشت به چت</a>
+    </div>
+    <div id="excalidraw-root">
+      <div id="boardLoading">در حال بارگذاری بوم…</div>
+      <div id="boardError" hidden>
+        <div>
+          <div>بوم لود نشد — اینترنت و دسترسی به esm.sh را بررسی کنید.</div>
+          <button type="button" onclick="location.reload()">تلاش دوباره</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+/* ============================================================
+   diagram chat — نسخه‌ی جمع‌وجور چت صفحه‌ی اصلی
+   همان گفت‌وگوی فعال (localStorage مشترک با index.html) و
+   همان قرارداد بک‌اند: POST /chat/stream (SSE) با بازگشت به /chat
+   این اسکریپت به CDN وابسته نیست؛ حتی اگر بوم لود نشد، چت کار می‌کند.
+   ============================================================ */
+(function () {
+  "use strict";
+  const $ = (sel) => document.querySelector(sel);
+  const dlogWrap = $("#dlogWrap"), dlog = $("#dlog");
+  const dform = $("#dform"), dinput = $("#dinput"), dsendBtn = $("#dsend"), dstopBtn = $("#dstop");
+  const titleEl = $("#diagramChatTitle");
+
+  const KEYS = { chats: "chatkit.chats.v1", active: "chatkit.active.v1", theme: "chatkit.theme.v1" };
+  const NEW_TITLE = "گفتوگوی جدید";
+
+  /* پوسته را از صفحه‌ی اصلی بگیر (بوم هم همین را می‌خواند) */
+  try {
+    const savedTheme = localStorage.getItem(KEYS.theme);
+    if (savedTheme === "dark" || savedTheme === "light") document.documentElement.dataset.theme = savedTheme;
+    else if (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches)
+      document.documentElement.dataset.theme = "dark";
+  } catch (e) { /* نادیده بگیر */ }
+
+  const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const timeOf = (ts) => new Date(ts || Date.now()).toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit" });
+
+  function toast(msg) {
+    const el = $("#toast");
+    el.textContent = msg;
+    el.classList.add("show");
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => el.classList.remove("show"), 2200);
+  }
+
+  /* ---------- tiny markdown (برگرفته از index.html) ---------- */
+  const LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+  function inlineFmt(text) {
+    const links = [];
+    let out = esc(text).replace(LINK_RE, (m, label, url) => {
+      links.push('<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + label + "</a>");
+      return "\u0001" + (links.length - 1) + "\u0001";
+    });
+    out = out.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+    out = out.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+    out = out.replace(/(^|[^*\w])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+    out = out.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g,
+      (m, pre, url) => pre + '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + "</a>");
+    return out.replace(/\u0001(\d+)\u0001/g, (m, i) => links[Number(i)]);
+  }
+  function renderMarkdown(text) {
+    const src = String(text || "");
+    const chunks = [];
+    const fence = /```([^\n`]*)\n?([\s\S]*?)(?:```|$)/g;
+    let last = 0, m;
+    while ((m = fence.exec(src)) !== null) {
+      if (m.index > last) chunks.push({ kind: "text", value: src.slice(last, m.index) });
+      chunks.push({ kind: "code", lang: (m[1] || "").trim(), value: m[2].replace(/\n$/, "") });
+      last = fence.lastIndex;
+      if (fence.lastIndex === m.index) fence.lastIndex++;
+    }
+    if (last < src.length) chunks.push({ kind: "text", value: src.slice(last) });
+    return chunks.map((c) => {
+      if (c.kind === "code")
+        return '<div class="code"><pre><code>' + esc(c.value) + "</code></pre></div>";
+      const lines = c.value.split(/\r?\n/);
+      const blocks = [];
+      let paras = [], list = null;
+      const flushPara = () => { if (paras.length) { blocks.push("<p>" + paras.join("<br>") + "</p>"); paras = []; } };
+      const flushList = () => {
+        if (!list) return;
+        blocks.push("<" + list.tag + ">" + list.items.map((i) => "<li>" + i + "</li>").join("") + "</" + list.tag + ">");
+        list = null;
+      };
+      for (const raw of lines) {
+        const line = raw.replace(/\s+$/, "");
+        let mm;
+        if (!line.trim()) { flushPara(); flushList(); continue; }
+        if ((mm = line.match(/^\s*#{1,6}\s+(.*)$/))) { flushPara(); flushList(); blocks.push("<h3>" + inlineFmt(mm[1]) + "</h3>"); continue; }
+        if ((mm = line.match(/^\s*[-*•]\s+(.*)$/))) {
+          flushPara(); if (!list || list.tag !== "ul") { flushList(); list = { tag: "ul", items: [] }; }
+          list.items.push(inlineFmt(mm[1])); continue;
+        }
+        if ((mm = line.match(/^\s*\d+[.)]\s+(.*)$/))) {
+          flushPara(); if (!list || list.tag !== "ol") { flushList(); list = { tag: "ol", items: [] }; }
+          list.items.push(inlineFmt(mm[1])); continue;
+        }
+        if ((mm = line.match(/^\s*>\s?(.*)$/))) { flushPara(); flushList(); blocks.push("<blockquote>" + inlineFmt(mm[1]) + "</blockquote>"); continue; }
+        flushList();
+        paras.push(inlineFmt(line));
+      }
+      flushPara(); flushList();
+      return blocks.join("");
+    }).join("");
+  }
+
+  /* ---------- storage (مشترک با index.html) ---------- */
+  const state = { chats: [], activeId: null };
+  function makeChat(title) {
+    return { id: uid(), title: title || NEW_TITLE, messages: [], createdAt: Date.now(), updatedAt: Date.now() };
+  }
+  function normalizeChat(c) {
+    const msgs = Array.isArray(c && c.messages) ? c.messages : [];
+    return {
+      id: c && c.id ? String(c.id) : uid(),
+      title: (c && c.title) || NEW_TITLE,
+      createdAt: Number(c && c.createdAt) || Date.now(),
+      updatedAt: Number(c && c.updatedAt) || Date.now(),
+      messages: msgs
+        .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+        .map((m) => ({ role: m.role, content: m.content, ts: Number(m.ts) || Date.now(), error: !!m.error })),
+    };
+  }
+  function load() {
+    try {
+      const raw = localStorage.getItem(KEYS.chats);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (Array.isArray(parsed)) state.chats = parsed.map(normalizeChat).filter(Boolean);
+    } catch (e) { console.warn("خواندن گفتوگوها ممکن نشد:", e); }
+    if (!state.chats.length) state.chats = [makeChat()];
+    let savedActive = null;
+    try { savedActive = localStorage.getItem(KEYS.active); } catch (e) { /* نادیده بگیر */ }
+    state.activeId = state.chats.some((c) => c.id === savedActive) ? savedActive : state.chats[0].id;
+  }
+  function save() {
+    try {
+      localStorage.setItem(KEYS.chats, JSON.stringify(state.chats));
+      localStorage.setItem(KEYS.active, state.activeId || "");
+    } catch (e) { console.warn("ذخیرهسازی ممکن نشد:", e); }
+  }
+  const activeChat = () => state.chats.find((c) => c.id === state.activeId) || null;
+  const titleFor = (text) => {
+    const t = String(text).replace(/\s+/g, " ").trim();
+    return t.length > 38 ? t.slice(0, 38) + "…" : (t || NEW_TITLE);
+  };
+
+  /* ---------- rendering ---------- */
+  let busy = false;
+  let controller = null;
+  let liveText = "";
+  const PENDING_DOTS = '<span class="typing"><i></i><i></i><i></i></span>';
+
+  function scrollDown(force) {
+    const near = dlog.scrollHeight - dlog.scrollTop - dlog.clientHeight < 160;
+    if (force || near) dlog.scrollTop = dlog.scrollHeight;
+  }
+  function buildRow(role, content, opts) {
+    const o = opts || {};
+    const row = document.createElement("div");
+    row.className = "drow " + role + (o.error ? " error" : "");
+    const avatar = document.createElement("div");
+    avatar.className = "davatar";
+    avatar.textContent = role === "user" ? "🧑" : "🤖";
+    const col = document.createElement("div");
+    col.className = "dcol";
+    const bubble = document.createElement("div");
+    bubble.className = "dbubble";
+    bubble.dir = "auto";
+    bubble.innerHTML = o.pending ? PENDING_DOTS : renderMarkdown(content);
+    if (o.streaming) bubble.classList.add("streaming");
+    const meta = document.createElement("div");
+    meta.className = "dmeta";
+    if (!o.pending) meta.textContent = timeOf(o.ts);
+    col.appendChild(bubble);
+    col.appendChild(meta);
+    row.appendChild(avatar);
+    row.appendChild(col);
+    return row;
+  }
+  function renderConversation() {
+    const chat = activeChat();
+    dlogWrap.innerHTML = "";
+    if (!chat) return;
+    titleEl.textContent = chat.title;
+    if (!chat.messages.length) {
+      const empty = document.createElement("div");
+      empty.className = "dempty";
+      empty.textContent = "هنوز پیامی ندارد — سوالت را بنویس؛ می‌توانی هم‌زمان روی بوم نمودار بکشی.";
+      dlogWrap.appendChild(empty);
+    } else {
+      for (const m of chat.messages)
+        dlogWrap.appendChild(buildRow(m.role, m.content, { ts: m.ts, error: m.error }));
+    }
+    updateComposer();
+    scrollDown(true);
+  }
+  function updateComposer() {
+    dsendBtn.disabled = busy;
+    dsendBtn.textContent = busy ? "…" : "ارسال";
+    dstopBtn.hidden = !busy;
+  }
+  function autoGrow() {
+    dinput.style.height = "auto";
+    dinput.style.height = Math.min(dinput.scrollHeight, 140) + "px";
+  }
+
+  /* ---------- sending (SSE مثل index.html) ---------- */
+  function parseEvent(block) {
+    let data = "";
+    for (const line of block.split("\n")) {
+      if (line.startsWith("data:")) data += line.slice(5).trimStart();
+    }
+    if (!data) return null;
+    try { return JSON.parse(data); } catch (e) { return null; }
+  }
+  async function openStream(payload, signal, onEvent) {
+    const res = await fetch("/chat/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      body: JSON.stringify(payload),
+      signal,
+    });
+    if (!res.ok) throw new Error("stream " + res.status);
+    if (!res.body || !res.body.getReader) throw new Error("stream در دسترس نیست");
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true }).replace(/\r/g, "");
+      let cut;
+      while ((cut = buffer.indexOf("\n\n")) !== -1) {
+        const evt = parseEvent(buffer.slice(0, cut));
+        buffer = buffer.slice(cut + 2);
+        if (evt) onEvent(evt);
+      }
+    }
+    const last = parseEvent(buffer);
+    if (last) onEvent(last);
+  }
+  async function fetchReplyJson(payload, signal) {
+    const res = await fetch("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal,
+    });
+    if (!res.ok) throw new Error("کد پاسخ سرور: " + res.status);
+    const data = await res.json().catch(() => null);
+    const reply = data && typeof data.reply === "string" ? data.reply.trim() : "";
+    if (!reply) throw new Error("پاسخ خالی از سرور دریافت شد");
+    return { reply };
+  }
+  const streamMissing = (err) => !!err && String(err.message || "").startsWith("stream ");
+
+  async function send() {
+    const chat = activeChat();
+    if (!chat || busy) return;
+    const text = dinput.value.trim();
+    if (!text) return;
+    dinput.value = "";
+    autoGrow();
+
+    chat.messages.push({ role: "user", content: text, ts: Date.now() });
+    if (chat.title === NEW_TITLE) chat.title = titleFor(text);
+    chat.updatedAt = Date.now();
+    save();
+    titleEl.textContent = chat.title;
+
+    const empty = dlogWrap.querySelector(".dempty");
+    if (empty) empty.remove();
+    dlogWrap.appendChild(buildRow("user", text, { ts: Date.now() }));
+
+    busy = true;
+    liveText = "";
+    const streamRow = buildRow("assistant", "", { pending: true });
+    dlogWrap.appendChild(streamRow);
+    updateComposer();
+    scrollDown(true);
+
+    controller = new AbortController();
+    const payload = { messages: chat.messages.map((m) => ({ role: m.role, content: m.content })) };
+    let received = "";
+    let serverError = "";
+    let paintTimer = 0;
+    const paint = () => {
+      paintTimer = 0;
+      if (!streamRow.isConnected) return;
+      const bubble = streamRow.querySelector(".dbubble");
+      if (!bubble) return;
+      bubble.innerHTML = received ? renderMarkdown(received) : PENDING_DOTS;
+      bubble.classList.toggle("streaming", !!received);
+      scrollDown(false);
+    };
+    const schedulePaint = () => { if (!paintTimer) paintTimer = setTimeout(paint, 90); };
+    const finish = (content, isError) => {
+      streamRow.classList.toggle("error", !!isError);
+      const bubble = streamRow.querySelector(".dbubble");
+      bubble.classList.remove("streaming");
+      bubble.innerHTML = renderMarkdown(content);
+      streamRow.querySelector(".dmeta").textContent = timeOf(Date.now());
+      scrollDown(true);
+    };
+
+    try {
+      await openStream(payload, controller.signal, (evt) => {
+        if (evt.type === "delta") { received += evt.text || ""; schedulePaint(); }
+        else if (evt.type === "restart") { received = ""; schedulePaint(); }
+        else if (evt.type === "error") { serverError = evt.message || "خطای نامشخص"; }
+        else if (evt.type === "compact" && evt.text) { toast(evt.text); }
+      });
+      if (paintTimer) { clearTimeout(paintTimer); paintTimer = 0; }
+      const reply = received.trim();
+      if (!reply && serverError) throw new Error(serverError);
+      if (!reply) throw new Error("پاسخ خالی از سرور دریافت شد");
+      chat.messages.push({ role: "assistant", content: reply, ts: Date.now() });
+      finish(reply, false);
+      if (serverError) toast("هشدار سرور: " + serverError);
+    } catch (err) {
+      if (err && err.name === "AbortError") {
+        const partial = received.trim();
+        if (partial) {
+          chat.messages.push({ role: "assistant", content: partial, ts: Date.now() });
+          finish(partial, false);
+        } else { streamRow.remove(); }
+        toast("درخواست متوقف شد");
+      } else if (streamMissing(err) && !received.trim()) {
+        try {
+          const res = await fetchReplyJson(payload, controller.signal);
+          chat.messages.push({ role: "assistant", content: res.reply, ts: Date.now() });
+          finish(res.reply, false);
+          toast("استریم در دسترس نبود؛ پاسخ یکجا دریافت شد");
+        } catch (err2) {
+          if (err2 && err2.name === "AbortError") { streamRow.remove(); }
+          else {
+            const content = "⚠️ ارتباط با سرور برقرار نشد: " + (err2.message || err2);
+            chat.messages.push({ role: "assistant", content, ts: Date.now(), error: true });
+            finish(content, true);
+          }
+        }
+      } else {
+        const content = (received.trim() ? received.trim() + "\n\n" : "") +
+          "⚠️ ارتباط با سرور برقرار نشد: " + (err.message || err);
+        chat.messages.push({ role: "assistant", content, ts: Date.now(), error: true });
+        finish(content, true);
+      }
+    } finally {
+      busy = false;
+      controller = null;
+      chat.updatedAt = Date.now();
+      save();
+      updateComposer();
+      dinput.focus();
+    }
+  }
+
+  /* ---------- events ---------- */
+  dform.addEventListener("submit", (e) => { e.preventDefault(); send(); });
+  dinput.addEventListener("input", autoGrow);
+  dinput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+  });
+  dstopBtn.addEventListener("click", () => { if (controller) controller.abort(); });
+
+  /* اگر در تب چت اصلی گفت‌وگو عوض/ویرایش شد، این صفحه هم تازه شود */
+  window.addEventListener("storage", (e) => {
+    if (e.key === KEYS.chats || e.key === KEYS.active) {
+      if (busy) return;
+      load();
+      renderConversation();
+    }
+  });
+
+  load();
+  renderConversation();
+  dinput.focus();
+})();
+</script>
+
+<script type="module">
+/* ============================================================
+   Excalidraw board — React 19 + @excalidraw/excalidraw 0.18.0
+   از CDN (esm.sh) با importmap؛ بدون JSX و بدون بیلد — همه‌چیز با
+   React.createElement ساخته می‌شود تا نیازی به Babel نباشد.
+   صحنه به‌صورت خودکار در localStorage ذخیره و بازیابی می‌شود.
+   ============================================================ */
+const SCENE_KEY = "excalidraw.diagram.v1";
+const loadingEl = document.getElementById("boardLoading");
+const errorEl = document.getElementById("boardError");
+const savedAtEl = document.getElementById("savedAt");
+
+function loadScene() {
+  try {
+    const raw = localStorage.getItem(SCENE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (data && Array.isArray(data.elements)) return data;
+  } catch (e) { console.warn("خواندن صحنه‌ی نمودار ممکن نشد:", e); }
+  return null;
+}
+
+function markSaved() {
+  if (!savedAtEl) return;
+  savedAtEl.textContent = "ذخیره شد ✓ " +
+    new Date().toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+async function boot() {
+  let React, createRoot, ExcalidrawLib;
+  try {
+    React = await import("https://esm.sh/react@19.0.0");
+    ({ createRoot } = await import("https://esm.sh/react-dom@19.0.0/client"));
+    ExcalidrawLib = await import(
+      "https://esm.sh/@excalidraw/excalidraw@0.18.0/dist/prod/index.js?external=react,react-dom"
+    );
+  } catch (e) {
+    console.error("بارگذاری Excalidraw ناموفق بود:", e);
+    if (loadingEl) loadingEl.hidden = true;
+    if (errorEl) errorEl.hidden = false;
+    return;
+  }
+
+  const ExcalidrawComp = ExcalidrawLib.Excalidraw || ExcalidrawLib.default;
+  if (!ExcalidrawComp || typeof createRoot !== "function") {
+    console.error("کامپوننت Excalidraw پیدا نشد.");
+    if (loadingEl) loadingEl.hidden = true;
+    if (errorEl) errorEl.hidden = false;
+    return;
+  }
+
+  const { useState, useEffect, useRef, useCallback } = React;
+  const initialScene = loadScene();
+
+  function DiagramApp() {
+    const [api, setApi] = useState(null);
+    const saveTimer = useRef(null);
+    const theme = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+
+    const onChange = useCallback((elements, appState, files) => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => {
+        const slimAppState = {
+          viewBackgroundColor: appState.viewBackgroundColor,
+          gridSize: appState.gridSize,
+        };
+        try {
+          localStorage.setItem(SCENE_KEY, JSON.stringify({ elements, appState: slimAppState, files }));
+        } catch (e) {
+          /* فایل‌های تصویری جا نشد (سقف localStorage)؛ بدون آن‌ها ذخیره کن */
+          try {
+            localStorage.setItem(SCENE_KEY, JSON.stringify({ elements, appState: slimAppState }));
+          } catch (e2) { console.warn("ذخیره‌ی صحنه ممکن نشد:", e2); return; }
+        }
+        markSaved();
+      }, 500);
+    }, []);
+
+    const clearBoard = useCallback(() => {
+      if (!api) return;
+      if (!confirm("همه‌ی عناصر بوم پاک شود؟")) return;
+      api.updateScene({ elements: [], appState: {} });
+      try { localStorage.removeItem(SCENE_KEY); } catch (e) { /* نادیده بگیر */ }
+      if (savedAtEl) savedAtEl.textContent = "";
+    }, [api]);
+
+    useEffect(() => { window.__diagramClear = clearBoard; }, [clearBoard]);
+    useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
+
+    return React.createElement(
+      "div",
+      { style: { width: "100%", height: "100%" } },
+      React.createElement(ExcalidrawComp, {
+        initialData: initialScene || {
+          elements: [],
+          appState: { viewBackgroundColor: "#ffffff" },
+          scrollToContent: true,
+        },
+        onChange,
+        excalidrawAPI: (a) => setApi(a),
+        theme,
+        langCode: "fa-IR",
+      })
+    );
+  }
+
+  const rootEl = document.getElementById("excalidraw-root");
+  createRoot(rootEl).render(React.createElement(DiagramApp));
+  if (loadingEl) loadingEl.hidden = true;
+  if (initialScene) markSaved();
+}
+
+document.getElementById("clearBoardBtn").addEventListener("click", () => {
+  if (typeof window.__diagramClear === "function") window.__diagramClear();
+});
+
+boot();
+</script>
+</body>
+</html>
