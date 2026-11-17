@@ -249,6 +249,7 @@ input,textarea{font:inherit; color:inherit}
       <b>📊 نمودار</b>
       <span id="savedAt"></span>
       <span class="grow"></span>
+      <button class="mini-btn" id="testDrawBtn" title="کشیدن فرایند نمونه روی بوم بدون چت">✏️ تست کشیدن</button>
       <button class="mini-btn" id="clearBoardBtn" title="پاک کردن همه‌ی عناصر بوم">🧹 پاک کردن بوم</button>
       <a class="mini-btn" href="/" target="_blank" rel="noopener">↩ بازگشت به چت</a>
     </div>
@@ -433,8 +434,8 @@ input,textarea{font:inherit; color:inherit}
     meta.className = "dmeta";
     if (!o.pending) meta.textContent = timeOf(o.ts);
     if (!o.pending && role === "assistant") {
-      const diagrams = parseDiagramSteps(content);
-      if (diagrams.length) attachDrawButton(meta, diagrams);
+      const parsed = parseDiagramSteps(content);
+      if (parsed.diagrams.length) attachDrawButton(meta, parsed.diagrams);
     }
     col.appendChild(bubble);
     col.appendChild(meta);
@@ -471,26 +472,49 @@ input,textarea{font:inherit; color:inherit}
   }
 
   /* ---------- diagram-steps: کشیدن فرایند روی بوم ---------- */
+  /* فرایند نمونه برای دکمه‌ی «تست کشیدن» (بدون مدل، مستقیم روی بوم) */
+  window.__demoDiagram = {
+    title: "ثبت تا تحویل",
+    steps: [
+      { title: "ثبت درخواست", desc: "مشتری درخواست را ثبت می‌کند" },
+      { title: "بررسی و تایید", desc: "کارشناس درخواست را بررسی می‌کند" },
+      { title: "اجرا و تحویل", desc: "کار انجام و تحویل داده می‌شود" },
+    ],
+  };
   function parseDiagramSteps(text) {
     const out = [];
-    const re = /```diagram-steps\s*\n([\s\S]*?)\n?```/g;
+    const bad = [];
+    /* هر بلوک کد را بگیر؛ diagram-steps یا json یا بدون زبان که JSON قدم‌ها را دارد */
+    const re = /```([A-Za-z0-9_-]*)\s*\n([\s\S]*?)\n?```/g;
     let m;
     while ((m = re.exec(String(text || ""))) !== null) {
-      try {
-        const data = JSON.parse(m[1]);
-        const steps = Array.isArray(data && data.steps) ? data.steps : [];
-        const clean = steps
-          .filter((s) => s && typeof s.title === "string" && s.title.trim())
-          .slice(0, 7)
-          .map((s) => ({
+      const lang = (m[1] || "").toLowerCase();
+      const body = m[2].trim();
+      if (lang && lang !== "diagram-steps" && lang !== "json") continue;
+      if (!body.startsWith("{")) continue;
+      let data = null;
+      try { data = JSON.parse(body); } catch (e) { /* JSON خراب */ }
+      if (!data) {
+        if (lang === "diagram-steps" || /"steps"\s*:/.test(body)) bad.push(body);
+        continue;
+      }
+      const rawSteps = Array.isArray(data.steps) ? data.steps : [];
+      const clean = rawSteps
+        .map((s) => {
+          if (typeof s === "string") return { title: s.trim(), desc: "" };
+          if (s && typeof s.title === "string") return {
             title: s.title.trim().slice(0, 60),
             desc: typeof s.desc === "string" ? s.desc.trim().slice(0, 120) : "",
-          }));
-        if (clean.length >= 2)
-          out.push({ title: typeof data.title === "string" ? data.title.trim().slice(0, 80) : "", steps: clean });
-      } catch (e) { /* بلوک خراب؛ نادیده بگیر */ }
+          };
+          return null;
+        })
+        .filter((s) => s && s.title)
+        .slice(0, 7);
+      if (clean.length >= 2)
+        out.push({ title: typeof data.title === "string" ? data.title.trim().slice(0, 80) : "", steps: clean });
+      else if (lang === "diagram-steps" || /"steps"\s*:/.test(body)) bad.push(body);
     }
-    return out;
+    return { diagrams: out, badBlocks: bad };
   }
   function attachDrawButton(metaEl, diagrams) {
     const btn = document.createElement("button");
@@ -608,14 +632,19 @@ input,textarea{font:inherit; color:inherit}
       const metaEl = streamRow.querySelector(".dmeta");
       metaEl.textContent = timeOf(Date.now());
       if (!isError) {
-        const diagrams = parseDiagramSteps(content);
-        if (diagrams.length) {
-          if (drawStepsOnBoard(diagrams[0])) {
+        const parsed = parseDiagramSteps(content);
+        if (parsed.diagrams.length) {
+          if (drawStepsOnBoard(parsed.diagrams[0])) {
             toast("نمودار روی بوم کشیده شد ✓");
           } else {
             /* بوم هنوز آماده نیست؛ دکمه‌ی «روی بوم بکش» زیر پیام می‌ماند */
-            attachDrawButton(metaEl, diagrams);
+            attachDrawButton(metaEl, parsed.diagrams);
+            toast("بوم هنوز لود نشده؛ با دکمه‌ی «روی بوم بکش» زیر پیام بکش");
           }
+        } else if (parsed.badBlocks.length) {
+          toast("بلوک نمودار برگشت ولی خوانا نبود — دوباره تلاش کن");
+        } else if (/بکش|نمودار|فرایند|فلوچارت|رسم/.test(text)) {
+          toast("مدل بلوک نمودار برنگرداند؛ دوباره تلاش کن یا «تست کشیدن» را بزن");
         }
       }
       scrollDown(true);
@@ -894,6 +923,15 @@ async function boot() {
 
 document.getElementById("clearBoardBtn").addEventListener("click", () => {
   if (typeof window.__diagramClear === "function") window.__diagramClear();
+});
+
+/* تست کشیدن بدون مدل: فرایند نمونه را مستقیم روی بوم می‌کشد */
+document.getElementById("testDrawBtn").addEventListener("click", () => {
+  if (typeof window.__diagramDraw !== "function") {
+    alert("بوم هنوز لود نشده؛ چند ثانیه بعد دوباره بزن");
+    return;
+  }
+  window.__diagramDraw(window.__demoDiagram);
 });
 
 boot();
