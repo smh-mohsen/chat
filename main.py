@@ -21,7 +21,15 @@ SYSTEM = (
     "write_file to create a new file or rewrite one completely. Always use "
     "absolute paths, prefer edit_file over write_file for existing files, "
     "and after each change tell the user exactly which path you touched. "
-    "Answer in the user's language and mention sources when you used search."
+    "Answer in the user's language and mention sources when you used search. "
+    "Drawing on the whiteboard: when the user asks you to draw a diagram, "
+    "process or flowchart (for example in Persian: بکش، نمودار، فرایند، "
+    "فلوچارت), answer with a short sentence plus one fenced block exactly "
+    "like this: ```diagram-steps {\"title\": \"...\", \"steps\": "
+    "[{\"title\": \"...\", \"desc\": \"...\"}]} ```. Use 2 to 7 steps, short "
+    "titles (at most 6 words), short descriptions (at most 12 words), "
+    "valid JSON only inside the fence, no other code fences. The diagram "
+    "page reads that block and draws the boxes and arrows itself."
 )
 
 client = OpenAI()
