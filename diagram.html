@@ -126,6 +126,14 @@ input,textarea{font:inherit; color:inherit}
 .dbubble pre{margin:0; padding:10px; overflow-x:auto; direction:ltr; text-align:left}
 .dbubble pre code{background:none; padding:0; font-size:12px; line-height:1.6; white-space:pre}
 .dmeta{font-size:10.5px; color:var(--muted); padding-inline:4px}
+.draw-btn{color:var(--accent); font-size:11.5px; padding:1px 6px; border-radius:7px}
+.draw-btn:hover{background:var(--accent-soft)}
+.chip{
+  padding:9px 14px; border-radius:14px; font-size:13px;
+  background:var(--panel); border:1px solid var(--border); box-shadow:var(--shadow-sm);
+  transition:transform .15s, border-color .15s, color .15s;
+}
+.chip:hover{transform:translateY(-2px); border-color:var(--accent); color:var(--accent)}
 .drow.error .dbubble{border-color:var(--danger); color:var(--danger); background:rgba(225,29,72,.06)}
 .dbubble.streaming{border-color:var(--accent)}
 .dbubble.streaming::after{
@@ -424,6 +432,10 @@ input,textarea{font:inherit; color:inherit}
     const meta = document.createElement("div");
     meta.className = "dmeta";
     if (!o.pending) meta.textContent = timeOf(o.ts);
+    if (!o.pending && role === "assistant") {
+      const diagrams = parseDiagramSteps(content);
+      if (diagrams.length) attachDrawButton(meta, diagrams);
+    }
     col.appendChild(bubble);
     col.appendChild(meta);
     row.appendChild(avatar);
@@ -438,7 +450,8 @@ input,textarea{font:inherit; color:inherit}
     if (!chat.messages.length) {
       const empty = document.createElement("div");
       empty.className = "dempty";
-      empty.textContent = "هنوز پیامی ندارد — سوالت را بنویس؛ می‌توانی هم‌زمان روی بوم نمودار بکشی.";
+      empty.innerHTML = "هنوز پیامی ندارد — سوالت را بنویس؛ می‌توانی هم‌زمان روی بوم نمودار بکشی." +
+        '<div style="margin-top:14px"><button type="button" class="chip" data-suggest="یه فرایند سه مرحله‌ای بکش: ثبت درخواست، بررسی و تایید، اجرا و تحویل">یه فرایند سه مرحله‌ای بکش ✨</button></div>';
       dlogWrap.appendChild(empty);
     } else {
       for (const m of chat.messages)
@@ -455,6 +468,46 @@ input,textarea{font:inherit; color:inherit}
   function autoGrow() {
     dinput.style.height = "auto";
     dinput.style.height = Math.min(dinput.scrollHeight, 140) + "px";
+  }
+
+  /* ---------- diagram-steps: کشیدن فرایند روی بوم ---------- */
+  function parseDiagramSteps(text) {
+    const out = [];
+    const re = /```diagram-steps\s*\n([\s\S]*?)\n?```/g;
+    let m;
+    while ((m = re.exec(String(text || ""))) !== null) {
+      try {
+        const data = JSON.parse(m[1]);
+        const steps = Array.isArray(data && data.steps) ? data.steps : [];
+        const clean = steps
+          .filter((s) => s && typeof s.title === "string" && s.title.trim())
+          .slice(0, 7)
+          .map((s) => ({
+            title: s.title.trim().slice(0, 60),
+            desc: typeof s.desc === "string" ? s.desc.trim().slice(0, 120) : "",
+          }));
+        if (clean.length >= 2)
+          out.push({ title: typeof data.title === "string" ? data.title.trim().slice(0, 80) : "", steps: clean });
+      } catch (e) { /* بلوک خراب؛ نادیده بگیر */ }
+    }
+    return out;
+  }
+  function attachDrawButton(metaEl, diagrams) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "draw-btn";
+    btn.textContent = "🖌 روی بوم بکش";
+    btn.addEventListener("click", () => {
+      const ok = drawStepsOnBoard(diagrams[0]);
+      toast(ok ? "نمودار روی بوم کشیده شد ✓" : "بوم هنوز لود نشده؛ چند ثانیه بعد دوباره بزن");
+    });
+    metaEl.appendChild(document.createTextNode(" · "));
+    metaEl.appendChild(btn);
+  }
+  function drawStepsOnBoard(diagram) {
+    if (typeof window.__diagramDraw !== "function") return false;
+    try { return window.__diagramDraw(diagram) === true; }
+    catch (e) { console.warn("کشیدن روی بوم ممکن نشد:", e); return false; }
   }
 
   /* ---------- sending (SSE مثل index.html) ---------- */
@@ -552,7 +605,19 @@ input,textarea{font:inherit; color:inherit}
       const bubble = streamRow.querySelector(".dbubble");
       bubble.classList.remove("streaming");
       bubble.innerHTML = renderMarkdown(content);
-      streamRow.querySelector(".dmeta").textContent = timeOf(Date.now());
+      const metaEl = streamRow.querySelector(".dmeta");
+      metaEl.textContent = timeOf(Date.now());
+      if (!isError) {
+        const diagrams = parseDiagramSteps(content);
+        if (diagrams.length) {
+          if (drawStepsOnBoard(diagrams[0])) {
+            toast("نمودار روی بوم کشیده شد ✓");
+          } else {
+            /* بوم هنوز آماده نیست؛ دکمه‌ی «روی بوم بکش» زیر پیام می‌ماند */
+            attachDrawButton(metaEl, diagrams);
+          }
+        }
+      }
       scrollDown(true);
     };
 
@@ -615,6 +680,14 @@ input,textarea{font:inherit; color:inherit}
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
   });
   dstopBtn.addEventListener("click", () => { if (controller) controller.abort(); });
+  dlogWrap.addEventListener("click", (e) => {
+    const chip = e.target.closest("[data-suggest]");
+    if (chip) {
+      dinput.value = chip.dataset.suggest;
+      autoGrow();
+      dinput.focus();
+    }
+  });
 
   /* اگر در تب چت اصلی گفت‌وگو عوض/ویرایش شد، این صفحه هم تازه شود */
   window.addEventListener("storage", (e) => {
@@ -657,6 +730,63 @@ function markSaved() {
   if (!savedAtEl) return;
   savedAtEl.textContent = "ذخیره شد ✓ " +
     new Date().toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+/* ---------- ساختن عناصر فرایند از روی قدم‌ها (چیدمان قطعی) ---------- */
+const BOX_W = 360, BOX_H = 100, GAP_Y = 72, TITLE_H = 44;
+const elUid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+const elNonce = () => Math.floor(Math.random() * 2147483647);
+
+function baseEl(el) {
+  return Object.assign({
+    angle: 0, strokeColor: "#1e1e1e", backgroundColor: "transparent",
+    fillStyle: "solid", strokeWidth: 2, strokeStyle: "solid",
+    roughness: 1, opacity: 100, groupIds: [], frameId: null,
+    roundness: null, seed: elNonce(), version: 1, versionNonce: elNonce(),
+    isDeleted: false, updated: 1, link: null, locked: false,
+  }, el);
+}
+
+function buildProcessElements(diagram, topY) {
+  const els = [];
+  const cx = 0; // مرکز افقی
+  let y = topY;
+  if (diagram.title) {
+    els.push(baseEl({
+      id: elUid(), type: "text", x: cx - BOX_W / 2, y, width: BOX_W, height: TITLE_H,
+      text: diagram.title, originalText: diagram.title,
+      fontSize: 24, fontFamily: 2, textAlign: "center", verticalAlign: "middle",
+      baseline: TITLE_H - 8, containerId: null, boundElements: [],
+    }));
+    y += TITLE_H + 24;
+  }
+  diagram.steps.forEach((step, i) => {
+    const rectId = elUid(), textId = elUid();
+    const text = step.desc ? step.title + "\n" + step.desc : step.title;
+    els.push(baseEl({
+      id: rectId, type: "rectangle", x: cx - BOX_W / 2, y, width: BOX_W, height: BOX_H,
+      strokeColor: "#5b5bd6", backgroundColor: "#e0e7ff",
+      roundness: { type: 3 }, boundElements: [{ id: textId, type: "text" }],
+    }));
+    els.push(baseEl({
+      id: textId, type: "text", x: cx - BOX_W / 2 + 12, y: y + 10, width: BOX_W - 24, height: BOX_H - 20,
+      text, originalText: text,
+      fontSize: 18, fontFamily: 2, textAlign: "center", verticalAlign: "middle",
+      baseline: BOX_H - 28, containerId: rectId, boundElements: [],
+    }));
+    y += BOX_H;
+    if (i < diagram.steps.length - 1) {
+      els.push(baseEl({
+        id: elUid(), type: "arrow", x: cx, y: y + 6, width: 0, height: GAP_Y - 12,
+        points: [[0, 0], [0, GAP_Y - 12]], lastCommittedPoint: null,
+        startBinding: null, endBinding: null,
+        startArrowhead: null, endArrowhead: "arrow",
+        strokeColor: "#6b7280",
+      }));
+      y += GAP_Y;
+    }
+  });
+  return els;
 }
 
 async function boot() {
@@ -717,7 +847,26 @@ async function boot() {
       if (savedAtEl) savedAtEl.textContent = "";
     }, [api]);
 
+    /* کشیدن فرایند روی بوم: زیرِ نقاشی‌های موجود، بعد اسکرول به آن */
+    const drawDiagram = useCallback((diagram) => {
+      if (!api || !diagram || !Array.isArray(diagram.steps) || diagram.steps.length < 2) return false;
+      const existing = api.getSceneElements();
+      let topY = 0;
+      if (existing.length) {
+        const bottom = Math.max(...existing.map((el) => (el.y || 0) + (el.height || 0)));
+        topY = bottom + 140;
+      }
+      const fresh = buildProcessElements(diagram, topY);
+      api.updateScene({ elements: [...existing, ...fresh] });
+      api.scrollToContent();
+      return true;
+    }, [api]);
+
     useEffect(() => { window.__diagramClear = clearBoard; }, [clearBoard]);
+    useEffect(() => {
+      window.__diagramDraw = drawDiagram;
+      window.__excalidrawAPI = api;
+    }, [drawDiagram, api]);
     useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
 
     return React.createElement(
