@@ -823,3 +823,8 @@ def chat_stream(req: ChatReq):
 @app.get("/")
 def index():
     return FileResponse("index.html")
+
+
+@app.get("/diagram")
+def diagram():
+    return FileResponse("diagram.html")
