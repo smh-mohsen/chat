@@ -2,10 +2,12 @@
 
 Eval 1 (arrow binding): do arrows stay attached when a node is dragged?
 Eval 2 (node overlap): do step nodes overlap each other?
-Eval 3 (text visibility): do drawn texts render immediately, no refresh?
-Eval 4 (scene isolation): does each conversation keep its own board scene?
+Eval 3 (faithfulness): does the drawn diagram say exactly what was asked?
+Eval 4 (arrow geometry): do arrows visually touch the rectangles?
+Eval 5 (layout order): are steps stacked top-to-bottom, aligned, evenly spaced?
+Eval 6 (text fit): does every text fit inside its own box?
 
-The elements under test come from the REAL builder in diagram.html
+The elements under test come from the REAL parser + builder in diagram.html
 (see diagram_gen.py) — the evals measure the code's output, they do not
 call an LLM and need no API key.
 
@@ -19,12 +21,14 @@ import pytest
 from deepeval import assert_test
 from deepeval.test_case import LLMTestCase
 
-from diagram_gen import generate_elements, scene_isolation_report
+from diagram_gen import build_from_reply, generate_elements
 from metrics import (
     ArrowBindingMetric,
+    ArrowGeometryMetric,
+    FaithfulnessMetric,
+    LayoutOrderMetric,
     NodeOverlapMetric,
-    SceneIsolationMetric,
-    TextVisibilityMetric,
+    TextFitMetric,
 )
 
 TWO_STEPS = {
@@ -67,6 +71,46 @@ CASES = [
     (LONG_DESC, "long-desc"),
 ]
 
+# (name, user request, model reply, expected steps)
+FAITH_CASES = [
+    (
+        "correct-2-steps",
+        "نمودار شروع و پایان بکش",
+        "```diagram-steps\n{\"title\": \"شروع تا پایان\", \"steps\": [{\"title\": \"شروع\", \"desc\": \"نقطه‌ی آغاز\"}, {\"title\": \"پایان\", \"desc\": \"نقطه‌ی پایان\"}]}\n```",
+        [
+            {"title": "شروع", "desc": "نقطه‌ی آغاز"},
+            {"title": "پایان", "desc": "نقطه‌ی پایان"},
+        ],
+    ),
+    (
+        "invented-step",
+        "نمودار شروع و پایان بکش",
+        "```diagram-steps\n{\"title\": \"شروع تا پایان\", \"steps\": [{\"title\": \"شروع\", \"desc\": \"نقطه‌ی آغاز\"}, {\"title\": \"بازبینی\", \"desc\": \"بررسی میانی\"}, {\"title\": \"پایان\", \"desc\": \"نقطه‌ی پایان\"}]}\n```",
+        [
+            {"title": "شروع", "desc": "نقطه‌ی آغاز"},
+            {"title": "پایان", "desc": "نقطه‌ی پایان"},
+        ],
+    ),
+    (
+        "missing-step",
+        "نمودار شروع و پایان بکش",
+        "```diagram-steps\n{\"title\": \"شروع تا پایان\", \"steps\": [{\"title\": \"شروع\", \"desc\": \"نقطه‌ی آغاز\"}]}\n```",
+        [
+            {"title": "شروع", "desc": "نقطه‌ی آغاز"},
+            {"title": "پایان", "desc": "نقطه‌ی پایان"},
+        ],
+    ),
+    (
+        "wrong-title",
+        "نمودار شروع و پایان بکش",
+        "```diagram-steps\n{\"title\": \"شروع تا پایان\", \"steps\": [{\"title\": \"شروع\", \"desc\": \"نقطه‌ی آغاز\"}, {\"title\": \"اتمام\", \"desc\": \"نقطه‌ی پایان\"}]}\n```",
+        [
+            {"title": "شروع", "desc": "نقطه‌ی آغاز"},
+            {"title": "پایان", "desc": "نقطه‌ی پایان"},
+        ],
+    ),
+]
+
 
 def _case(diagram, name):
     elements = generate_elements(diagram)
@@ -91,21 +135,30 @@ def test_nodes_do_not_overlap(diagram, name):
     assert_test(_case(diagram, name), [NodeOverlapMetric()])
 
 
-@pytest.mark.parametrize("diagram,name", CASES, ids=[c[1] for c in CASES])
-def test_text_visible_immediately(diagram, name):
-    assert_test(_case(diagram, name), [TextVisibilityMetric()])
-
-
-SCENE_CASES = [(True, "with-legacy-scene"), (False, "fresh-start")]
-
-
-@pytest.mark.parametrize("with_legacy,name", SCENE_CASES, ids=[c[1] for c in SCENE_CASES])
-def test_scene_isolation(with_legacy, name):
-    report = scene_isolation_report(with_legacy)
+@pytest.mark.parametrize(
+    "name,user_request,reply,expected", FAITH_CASES, ids=[c[0] for c in FAITH_CASES]
+)
+def test_faithful_to_request(name, user_request, reply, expected):
+    elements = build_from_reply(reply)
     test_case = LLMTestCase(
-        input=f"Scene isolation ({name}): each conversation keeps its own board scene",
-        actual_output=json.dumps(report, ensure_ascii=False),
-        expected_output="All isolation checks true.",
+        input=user_request,
+        actual_output=json.dumps(elements, ensure_ascii=False),
+        expected_output=json.dumps(expected, ensure_ascii=False),
         context=[f"case: {name}"],
     )
-    assert_test(test_case, [SceneIsolationMetric()])
+    assert_test(test_case, [FaithfulnessMetric()])
+
+
+@pytest.mark.parametrize("diagram,name", CASES, ids=[c[1] for c in CASES])
+def test_arrows_touch_rectangles(diagram, name):
+    assert_test(_case(diagram, name), [ArrowGeometryMetric()])
+
+
+@pytest.mark.parametrize("diagram,name", CASES, ids=[c[1] for c in CASES])
+def test_layout_order(diagram, name):
+    assert_test(_case(diagram, name), [LayoutOrderMetric()])
+
+
+@pytest.mark.parametrize("diagram,name", CASES, ids=[c[1] for c in CASES])
+def test_text_fits_in_box(diagram, name):
+    assert_test(_case(diagram, name), [TextFitMetric()])
